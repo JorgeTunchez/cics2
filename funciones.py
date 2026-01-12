@@ -1,5 +1,9 @@
 from pathlib import Path
+from conexionBD import *
 import re
+import json
+import datetime
+import os
 
 # =========================
 # DETECTORES BASE
@@ -242,3 +246,323 @@ def parse_cicsadm(file_path: Path) -> dict:
         i += 1
 
     return out
+
+
+
+# Validar si ya existe un segmento con la misma fecha
+def validarArchivoFecha(archivo, fecha_str):
+    #validar si en base de datos ya existe un segmento con la misma 
+    conn = conectar_base_datos()
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM validacion_sistema WHERE archivo = ? AND fecha = ?", (archivo, fecha_str))   
+    count = cursor.fetchone()[0]
+    conn.close()    
+    return count
+
+
+# crear funcion que valide si ya existe un archivo en la tabla archivos
+def validarArchivoExistente(nombreArchivo):
+    count = 0
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM archivos WHERE archivo = ?", (nombreArchivo))   
+    count = cursor.fetchone()[0]
+    conn.close()    
+    return count
+
+#crear función para insertar nombre de archivo
+def insertarArchivo(nombreArchivo):
+    conn_sqlserver = conectar_base_datos()
+    cursor = conn_sqlserver.cursor()
+
+    # ✅ crear tabla si no existe
+    cursor.execute("""
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='archivos' AND xtype='U')
+    CREATE TABLE archivos
+    (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        archivo NVARCHAR(255)
+    );
+    """)
+    conn_sqlserver.commit()
+
+    cantidadArchivos = validarArchivoExistente(nombreArchivo)
+    if cantidadArchivos == 0:
+
+        # insertar nombre de archivo
+        insert_sql = """
+            INSERT INTO archivos (archivo)
+            VALUES (?)
+        """
+
+        cursor.execute(insert_sql, (nombreArchivo,))
+        conn_sqlserver.commit()
+        conn_sqlserver.close()
+        print(f"Archivo insertado en archivos_procesados: {nombreArchivo}")
+
+
+# validar si existe Segmento
+def validarSegmentoExistente(nombreSegmento):
+    count = 0
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM segmento WHERE segmento = ?", (nombreSegmento))   
+    count = cursor.fetchone()[0]
+    conn.close()    
+    return count
+
+
+# permite registrar segmento unicos en base de datos
+def insertarSeg(nombreSegmento):
+    conn_sqlserver = conectar_base_datos()
+    cursor = conn_sqlserver.cursor()
+
+    # ✅ crear tabla si no existe
+    cursor.execute("""
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='segmento' AND xtype='U')
+    CREATE TABLE segmento
+    (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        segmento NVARCHAR(255)
+    );
+    """)
+    conn_sqlserver.commit()
+    cantidadSegmentos = validarSegmentoExistente(nombreSegmento)
+    if cantidadSegmentos == 0:
+
+        # insertar nombre de segmento
+        insert_sql = """
+            INSERT INTO segmento (segmento)
+            VALUES (?)
+        """
+
+        cursor.execute(insert_sql, (nombreSegmento,))
+        conn_sqlserver.commit()
+        conn_sqlserver.close()
+        print(f"Segmento insertado en segmentos_procesados: {nombreSegmento}")
+
+
+def obtenerIdSegmento(nombreSegmento):
+    conn_sqlserver = conectar_base_datos()
+    cursor = conn_sqlserver.cursor()
+    cursor.execute("SELECT id FROM segmento WHERE segmento = ?", (nombreSegmento,))
+    segmento_id_row = cursor.fetchone()  
+    segmento_id = segmento_id_row[0] if segmento_id_row else None
+    return segmento_id
+
+
+def insertarValidacionSistema(fechaActual, nombreArchivo, diccionarioSegmentos):
+    """
+    diccionarioSegmentos esperado:
+      {
+        "Titulo Segmento": {"Campo": "Valor", ...},
+        "Otro Segmento": {...},
+        "Segmento Tabla": {}  # sin detalle por ahora
+      }
+    """
+
+    conn_sqlserver = conectar_base_datos()
+    cursor = conn_sqlserver.cursor()
+
+    # ✅ crear tabla si no existe (corregido: valida el nombre correcto)
+    cursor.execute("""
+    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='validacion_sistema' AND xtype='U')
+    CREATE TABLE validacion_sistema
+    (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        archivo INT,
+        segmento INT,
+        campo NVARCHAR(255),
+        valor NVARCHAR(MAX),
+        fecha DATE
+    );
+    """)
+    conn_sqlserver.commit()
+
+    # índice para mejorar consultas por fecha
+    cursor.execute("""
+    IF NOT EXISTS (
+        SELECT * FROM sys.indexes
+        WHERE name = 'IX_validacion_sistema_fecha'
+          AND object_id = OBJECT_ID('validacion_sistema')
+    )
+    CREATE INDEX IX_validacion_sistema_fecha ON validacion_sistema(fecha);
+    """)
+    conn_sqlserver.commit()
+
+
+    # en vez de ser nombreArchivo un INT, debería ser el ID del archivo en la tabla archivos
+    archivoNombre = nombreArchivo.replace(".TXT", "")
+    cursor.execute("SELECT id FROM archivos WHERE archivo = ?", (archivoNombre,))
+    archivo_id_row = cursor.fetchone()  
+    archivo_id = archivo_id_row[0] if archivo_id_row else None
+
+    print(f"Archivo ID para {archivoNombre}: {archivo_id}")
+    
+
+    # ✅ tu validación de duplicado por archivo+fecha
+    cantidadRegFechaActual = validarArchivoFecha(archivo_id, fechaActual)
+    print(f"Cantidad de registros para la fecha {fechaActual} y archivo {nombreArchivo}: {cantidadRegFechaActual}")
+
+    if cantidadRegFechaActual > 0:
+        print(f"Ya existen segmentos registrados para la fecha {fechaActual} y archivo {nombreArchivo}. No se insertarán nuevos registros.")
+        conn_sqlserver.close()
+        return
+
+    print(f"Insertando nuevos segmentos para la fecha {fechaActual} y archivo {nombreArchivo}...")
+
+    insert_sql = """
+        INSERT INTO validacion_sistema (archivo, segmento, campo, valor, fecha)
+        VALUES (?, ?, ?, ?, ?)
+    """
+
+    filas_insertadas = 0
+
+    # ✅ recorrer: titulo -> {campo:valor}
+    for titulo, campos in diccionarioSegmentos.items():
+
+        # Segmento tabla (vacío) => por ahora no insertamos detalle
+        if not campos:
+            # Si quieres registrar que existe el segmento aunque no tenga detalle, descomenta:
+            # cursor.execute(insert_sql, (nombreArchivo, titulo, "__TABLE__", "__NO_DETAIL__", fechaActual))
+            # filas_insertadas += 1
+            continue
+
+        # campos debe ser dict
+        if not isinstance(campos, dict):
+            # por si llega algo raro
+            continue
+
+        for campo, valor in campos.items():
+            # Normalizar valor a string (por seguridad)
+            if valor is None:
+                valor = ""
+            else:
+                valor = str(valor)
+
+            #obtener el id del segmento en base a su nombre
+            segmento_id = obtenerIdSegmento(titulo)
+
+            #print debug opcional
+            print(f"Archivo: {nombreArchivo}, Segmento: {titulo}, Campo: {campo}, Valor: {valor}")
+            cursor.execute(insert_sql, (archivo_id, segmento_id, str(campo), valor, fechaActual))
+            filas_insertadas += 1
+
+    conn_sqlserver.commit()
+    conn_sqlserver.close()
+    print(f"Inserción completada. Filas insertadas: {filas_insertadas}")
+
+
+def eliminar_segmentos_formato_0(DIRECTORIO_SALIDA):
+    archivos_json = os.listdir(DIRECTORIO_SALIDA)
+
+    for archivo_json in archivos_json:
+        archivo_json = archivo_json.upper()
+
+        if not archivo_json.endswith(".JSON"):
+            continue
+
+        json_path = DIRECTORIO_SALIDA / archivo_json
+
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+
+            prefijos_excluir = ("0", "Pool Number :", "Totals")
+
+            data = {
+                k: v
+                for k, v in data.items()
+                if not k.startswith(prefijos_excluir)
+            }
+
+            json_path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False),
+                encoding="utf-8"
+            )
+
+            print(f"✔ Segmentos formato '0' eliminados en: {archivo_json}")    
+
+        except Exception as e:
+            print(f"❌ Error eliminando segmentos en {archivo_json}: {e}")
+
+
+def insertar_desde_json_generados(DIRECTORIO_SALIDA, fechaActual):
+    archivos_json = os.listdir(DIRECTORIO_SALIDA)
+
+    for archivo_json in archivos_json:
+        archivo_json = archivo_json.upper()
+
+        if not archivo_json.endswith(".JSON"):
+            continue
+
+        json_path = DIRECTORIO_SALIDA / archivo_json
+
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+
+            # nombreArchivo lo guardamos como el txt original si quieres,
+            # o usamos el JSON como referencia
+            nombreArchivo = archivo_json.replace(".JSON", "")
+
+            print(f"Insertando segmentos desde: {archivo_json}")
+            insertarValidacionSistema(fechaActual, nombreArchivo, data)
+
+        except Exception as e:
+            print(f"❌ Error insertando desde {archivo_json}: {e}")
+
+
+
+def obtener_segmentos_por_archivo(DIRECTORIO_SALIDA, archivos_reportes):
+    segmentos_por_archivo = {}
+
+    for archivo in archivos_reportes:
+        nombre_json = archivo + ".JSON"
+        json_path = DIRECTORIO_SALIDA / nombre_json
+
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+            segmentos = list(data.keys())
+            segmentos_por_archivo[archivo] = segmentos
+
+            print(f"✔ Segmentos obtenidos para {archivo}: {len(segmentos)}")
+
+        except Exception as e:
+            print(f"❌ Error obteniendo segmentos para {archivo}: {e}")
+
+    return segmentos_por_archivo
+
+
+def insertar_segmentos_por_archivo(segmentos_por_archivo, fechaActual):
+    for archivo, segmentos in segmentos_por_archivo.items():
+        nombreArchivo = archivo
+
+        print(f"Insertando segmentos para archivo: {nombreArchivo}")
+
+        # Crear un diccionario simulado para insertar
+        diccionarioSegmentos = {segmento: {} for segmento in segmentos}
+
+        insertarValidacionSistema(fechaActual, nombreArchivo, diccionarioSegmentos)
+
+
+def imprimir_listado_segmentos_tabla(DIRECTORIO_SALIDA):
+    archivos_json = os.listdir(DIRECTORIO_SALIDA)
+
+    for archivo_json in archivos_json:
+        archivo_json = archivo_json.upper()
+
+        if not archivo_json.endswith(".JSON"):
+            continue
+
+        json_path = DIRECTORIO_SALIDA / archivo_json
+
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+
+            print(f"Listado de segmentos en {archivo_json}:")
+            for segmento in data.keys():
+                print(f" - {segmento}")
+            print("\n")
+
+        except Exception as e:
+            print(f"❌ Error imprimiendo segmentos en {archivo_json}: {e}")

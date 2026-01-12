@@ -1,7 +1,11 @@
 import os
 import json
+import datetime
+import json
 from pathlib import Path
-from funciones import parse_cicsadm
+from funciones import *     
+
+fechaActual = datetime.date.today().isoformat()
 
 
 # =========================
@@ -16,39 +20,87 @@ DIRECTORIO_SALIDA.mkdir(exist_ok=True)
 
 
 def main():
-    if not DIRECTORIO_REPORTES.exists():
-        raise FileNotFoundError(f"No existe el directorio: {DIRECTORIO_REPORTES}")
 
-    archivos = os.listdir(DIRECTORIO_REPORTES)
+    #cantidadRegFechaActual = validarCargaFecha(fechaActual)
+    cantidadRegFechaActual = 0
+    if cantidadRegFechaActual == 0:
 
-    for archivo in archivos:
-        archivo = archivo.upper()
+        if not DIRECTORIO_REPORTES.exists():
+            raise FileNotFoundError(f"No existe el directorio: {DIRECTORIO_REPORTES}")
 
-        # solo procesar txt
-        if not archivo.endswith(".TXT"):
-            continue
+        archivos = os.listdir(DIRECTORIO_REPORTES)
 
-        print(f"Archivo en análisis: {archivo}")
+        for archivo in archivos:
+            archivo = archivo.upper()
 
-        archivo_path = DIRECTORIO_REPORTES / archivo
+            # solo procesar txt
+            if not archivo.endswith(".TXT"):
+                continue
 
-        try:
-            data = parse_cicsadm(archivo_path)
+            print(f"Archivo en análisis: {archivo}")
 
-            nombre_json = archivo.replace(".TXT", ".JSON")
-            salida_path = DIRECTORIO_SALIDA / nombre_json
+            archivo_path = DIRECTORIO_REPORTES / archivo
 
-            salida_path.write_text(
-                json.dumps(data, indent=2, ensure_ascii=False),
-                encoding="utf-8"
-            )
+            try:
+                data = parse_cicsadm(archivo_path)
 
-            print(f"  ✔ Segmentos detectados: {len(data)}")
-            print(f"  ✔ JSON generado: {salida_path}\n")
+                nombre_json = archivo.replace(".TXT", ".JSON")
+                salida_path = DIRECTORIO_SALIDA / nombre_json
 
-        except Exception as e:
-            print(f"  ❌ Error procesando {archivo}: {e}\n")
+                salida_path.write_text(
+                    json.dumps(data, indent=2, ensure_ascii=False),
+                    encoding="utf-8"
+                )
 
+                print(f"  ✔ Segmentos detectados: {len(data)}")
+                print(f"  ✔ JSON generado: {salida_path}\n")
+
+            except Exception as e:
+                print(f"  ❌ Error procesando {archivo}: {e}\n")
+
+
+        # eliminar segmentos en el que el nombre inicie con "0"
+        eliminar_segmentos_formato_0(DIRECTORIO_SALIDA)
+
+        # imprimir listado segmentos tipo tabla
+        print("========================================")
+        print("Listado de segmentos tipo tabla:")
+        imprimir_listado_segmentos_tabla(DIRECTORIO_SALIDA)
+        print("========================================")
+        print("\n")
+
+        # obtener lista de archivos de reportes sin extensión
+        archivos_reportes = [
+            f[:-4]                       # elimina ".TXT"
+            for f in os.listdir(DIRECTORIO_REPORTES)
+            if f.upper().endswith(".TXT")
+        ]
+
+        # obtener la lista de segmentos por archivo
+        segmentos_por_archivo = obtener_segmentos_por_archivo(DIRECTORIO_SALIDA, archivos_reportes)
+        print("Segmentos por archivo:")
+        for archivo, segmentos in segmentos_por_archivo.items():
+            # imprimir el archivo y cada uno de sus segmentos
+            print(f"Archivo: {archivo}")
+            for segmento in segmentos:
+                insertarSeg(segmento)
+
+            
+
+        # insertar segmentos por archivo
+        insertar_segmentos_por_archivo(segmentos_por_archivo, fechaActual)
+
+        #imprimir archivos_reportes
+        for archivo in archivos_reportes:
+            insertarArchivo(archivo)
+
+
+        # ✅ al final, recorre JSONs e inserta en BD
+        insertar_desde_json_generados(DIRECTORIO_SALIDA, fechaActual)
+
+
+    else:
+        print(f"Ya existen {cantidadRegFechaActual} registros de segmentos para la fecha actual {fechaActual}. No se procesará el archivo nuevamente.")
 
 if __name__ == "__main__":
     main()
