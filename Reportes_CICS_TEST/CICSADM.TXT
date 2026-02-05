@@ -1804,6 +1804,8 @@
    ABAI            ABZD1ALI  Static    Yes      Any/USER          0          0          0          0          0          0          0
    ABAJ            ABED1ALJ  Static    Yes      Any/USER         18          0          0          0          0          0          0
    ABAK            ABZD1ALK  Static    Yes      Any/USER          0          0          0          0          0          0          0
+
+
    ABAL            ABZD1ALL  Static    Yes      Any/USER          0          0          0          0          0          0          0
    ABAM            ABZD1ALM  Static    Yes      Any/USER          0          0          0          0          0          0          0
    ABAN            ABYD1ALN  Static    Yes      Any/USER         12          0          0          0          0          0          0
@@ -21636,9 +21638,9 @@
    TSMN0640  GCDSA     CICS        1,024K            174            169           5          3,200           1M    0.10%           1M
    TSMN0704  GCDSA     CICS        1,024K          6,080          5,715         365        256,960           1M    0.10%           1M
    TSMN0768  GCDSA     CICS        1,024K          1,920          1,715         205        157,440           1M    0.10%           1M
-   TSMN0832                            0K              0              0           0              0           0     0.00%           0
-   TSMN0896                            0K              0              0           0              0           0     0.00%           0
-   TSMN0960                            0K              0              0           0              0           0     0.00%           0
+   TSMN0832                            0K              0              0           0              0           0     0.00%           0
+   TSMN0896                            0K              0              0           0              0           0     0.00%           0
+   TSMN0960                            0K              0              0           0              0           0     0.00%           0
    TSMN1024  GCDSA     CICS        1,024K          2,827          1,853         974        997,376           1M    0.10%           1M
 +  __________________________________________________________________________________________________________________________________
    Totals                                      3,008,537      2,972,277      36,260      7,014,976          17M
@@ -21649,8 +21651,8 @@
 0                    Tsqueue   Number of  Min Item  Max Item      Tsqueue              Lastused                  Expiry
    TSQueue Name      Location    Items     Length    Length       Flength    Tranid    Interval    Recoverable  Interval
 +  _____________________________________________________________________________________________________________________
-0  þ PIT19G          Main            1        256       256             256   CFQJ   000-11:31:20      No        000-00
-   þ PIT4B0          Main            1        256       256             256   CFQJ   000-09:07:46      No        000-00
+0    PIT19G          Main            1        256       256             256   CFQJ   000-11:31:20      No        000-00
+     PIT4B0          Main            1        256       256             256   CFQJ   000-09:07:46      No        000-00
    ABCDAA30          Main            1        128       128             128   ABCD   000-05:01:28      No        000-00
    ABCDAB30          Main            1        128       128             128   ABCD   000-06:10:57      No        000-00
    ABCDAB31          Main            1        128       128             128   ABCD   000-05:34:27      No        000-00
