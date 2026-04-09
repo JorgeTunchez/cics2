@@ -2,8 +2,8 @@ import os
 import json
 import datetime
 from pathlib import Path
-from funciones_old import *
-from funciones_new import *
+#from funciones_old import *
+from funciones import *
 
 fechaActual = datetime.date.today().isoformat()
 
@@ -11,8 +11,8 @@ fechaActual = datetime.date.today().isoformat()
 # CONFIGURACIÓN
 # =========================
 PROJECT_ROOT = Path(__file__).parent
-DIRECTORIO_REPORTES = PROJECT_ROOT / "Reportes_CICS_TEST"
-DIRECTORIO_SALIDA = PROJECT_ROOT / "JSON_SALIDA"
+DIRECTORIO_REPORTES = PROJECT_ROOT / "ENTRADA"
+DIRECTORIO_SALIDA = PROJECT_ROOT / "SALIDA"
 
 DIRECTORIO_SALIDA.mkdir(exist_ok=True)
 
@@ -68,7 +68,6 @@ def insertar_bd_desde_json():
             # tu función espera nombreArchivo, puede ser TXT o JSON
             # aquí usamos el nombre base como TXT para mantener consistencia
             nombre_txt = nombre_archivo_json.replace(".JSON", ".TXT")
-
             insertarValidacionSistema(fechaActual, nombre_txt, data)
 
         except Exception as e:
@@ -78,10 +77,9 @@ def insertar_bd_desde_json():
 
 def main():
     # Si quieres reactivar validación por fecha, pon tu función aquí.
-    cantidadRegFechaActual = 0
-
+    countProgramas, countTransacciones, cantidadRegFechaActual = validarCargaFecha(fechaActual)
     if cantidadRegFechaActual != 0:
-        print(f"Ya existen {cantidadRegFechaActual} registros para la fecha {fechaActual}. No se procesará nuevamente.")
+        print(f"Registros existentes para la fecha {fechaActual}: PROGRAMAS = {countProgramas}, TRANSACCIONES = {countTransacciones}, TOTAL = {cantidadRegFechaActual}")
         return
 
     generar_json_desde_txt()
@@ -89,8 +87,9 @@ def main():
 
 
 if __name__ == "__main__":
-    print(f"Proceso iniciado el {datetime.datetime.now().isoformat()}\n")
+    print("\n\n\n****************************************")
+    print(f"Proceso iniciado el dia {datetime.date.today().isoformat()} a las {datetime.datetime.now().strftime('%H:%M:%S')} horas\n")
+    main() # Ejecuta el proceso principal
+    print(f"\nProceso finalizado el dia {datetime.date.today().isoformat()} a las {datetime.datetime.now().strftime('%H:%M:%S')} horas\n")
+    print("****************************************\n\n\n")
 
-    main()
-
-    print(f"\nProceso finalizado el {datetime.datetime.now().isoformat()}\n")
