@@ -3,24 +3,100 @@ from __future__ import annotations
 from pathlib import Path
 from conexionBD import *
 import re
+from datetime import datetime
+
 
 boolPrueba = False
 cantidadRegistroPrueba = 5
 
+
+# Define una función para obtener la fecha del encabezado de un archivo, buscando un patrón específico y formateando la fecha encontrada
+def obtener_fecha_encabezado(file_path: Path) -> str:
+    """
+    Busca la fecha en el encabezado del archivo.
+    Retorna la fecha en formato YYYY-MM-DD.
+    Ejemplo origen: 12/09/2025
+    """
+    patron = re.compile(r"Date\s+(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
+
+    with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+        for _ in range(20):  # basta con revisar las primeras líneas
+            linea = f.readline()
+            if not linea:
+                break
+
+            m = patron.search(linea)
+            if m:
+                fecha_txt = m.group(1).strip()
+                fecha_obj = datetime.strptime(fecha_txt, "%d/%m/%Y")
+                return fecha_obj.strftime("%Y-%m-%d")
+
+    raise ValueError(f"No se encontró la fecha en el encabezado del archivo: {file_path.name}")
+
+
+# Genera archivos JSON a partir de los archivos TXT en el directorio de reportes, extrayendo solo los segmentos permitidos y guardando el resultado en el directorio de salida
+def validar_fecha_unica_archivos(directorio_reportes: Path) -> str:
+    """
+    Recorre todos los .TXT del directorio y valida que tengan la misma fecha.
+    Retorna la fecha única en formato YYYY-MM-DD.
+    Lanza excepción si hay fechas distintas o si no encuentra fecha.
+    """
+    archivos = sorted([p for p in directorio_reportes.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"])
+
+    if not archivos:
+        raise FileNotFoundError(f"No se encontraron archivos .TXT en: {directorio_reportes}")
+
+    fechas_por_archivo = {}
+
+    for archivo in archivos:
+        fecha = obtener_fecha_encabezado(archivo)
+        fechas_por_archivo[archivo.name] = fecha
+
+    fechas_unicas = sorted(set(fechas_por_archivo.values()))
+
+    if len(fechas_unicas) > 1:
+        detalle = "\n".join([f" - {nombre}: {fecha}" for nombre, fecha in fechas_por_archivo.items()])
+        raise ValueError(
+            "Se detectaron archivos con fechas distintas. "
+            "Todos los archivos de entrada deben pertenecer a la misma fecha.\n"
+            f"{detalle}"
+        )
+
+    return fechas_unicas[0]
+
+
+# Define una función para validar que todos los archivos TXT en un directorio tengan la misma fecha en su encabezado, lanzando una excepción si se encuentran fechas distintas o si no se encuentra la fecha en alguno de los archivos
+def validar_cantidad_archivos(directorio_reportes: Path, cantidad_esperada: int = 6) -> None:
+    archivos = [p for p in directorio_reportes.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
+    if len(archivos) != cantidad_esperada:
+        raise ValueError(
+            f"Se esperaban {cantidad_esperada} archivos .TXT en ENTRADA, "
+            f"pero se encontraron {len(archivos)}."
+        )
+
+
+
 # Valida si ya existen registros en la base de datos para la fecha indicada
-def validarCargaFecha(fecha_str):
+def validar_carga_fecha(fecha_actual: str) -> int:
+    """
+    Retorna la cantidad total de registros encontrados para la fecha indicada
+    en las tablas principales del proceso.
+    """
     conn = conectar_base_datos()
     cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM cics_programs WHERE fecha = ?", (fecha_str,))
-    countProgramas = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM cics_transactions WHERE fecha = ?", (fecha_str,))
-    countTransacciones = cursor.fetchone()[0]
-    
-    conteoTotal = countProgramas + countTransacciones
+
+    cursor.execute("""
+        SELECT
+            ISNULL((SELECT COUNT(*) FROM cics_programs WHERE fecha = ?), 0) +
+            ISNULL((SELECT COUNT(*) FROM cics_transactions WHERE fecha = ?), 0) +
+            ISNULL((SELECT COUNT(*) FROM cics_temporary_storage_queues WHERE fecha = ?), 0) +
+            ISNULL((SELECT COUNT(*) FROM cics_files WHERE fecha = ?), 0)
+    """, (fecha_actual, fecha_actual, fecha_actual, fecha_actual))
+
+    row = cursor.fetchone()
     conn.close()
-    return countProgramas, countTransacciones, conteoTotal
+
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 # Determina si una línea corresponde al encabezado de página

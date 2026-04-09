@@ -1,11 +1,9 @@
 import os
 import json
-import datetime
+from datetime import date, datetime
 from pathlib import Path
 #from funciones_old import *
 from funciones import *
-
-fechaActual = datetime.date.today().isoformat()
 
 # =========================
 # CONFIGURACIÓN
@@ -15,6 +13,10 @@ DIRECTORIO_REPORTES = PROJECT_ROOT / "ENTRADA"
 DIRECTORIO_SALIDA = PROJECT_ROOT / "SALIDA"
 
 DIRECTORIO_SALIDA.mkdir(exist_ok=True)
+
+validar_cantidad_archivos(DIRECTORIO_REPORTES, 6)
+fechaActual = validar_fecha_unica_archivos(DIRECTORIO_REPORTES)
+print(f"Fecha validada desde encabezados: {fechaActual}")
 
 
 def generar_json_desde_txt():
@@ -77,9 +79,13 @@ def insertar_bd_desde_json():
 
 def main():
     # Si quieres reactivar validación por fecha, pon tu función aquí.
-    countProgramas, countTransacciones, cantidadRegFechaActual = validarCargaFecha(fechaActual)
-    if cantidadRegFechaActual != 0:
-        print(f"Registros existentes para la fecha {fechaActual}: PROGRAMAS = {countProgramas}, TRANSACCIONES = {countTransacciones}, TOTAL = {cantidadRegFechaActual}")
+    cantidadRegFechaActual = validar_carga_fecha(fechaActual)
+
+    if cantidadRegFechaActual > 0:
+        print(
+            f"Ya existen {cantidadRegFechaActual} registros en base de datos "
+            f"para la fecha {fechaActual}. No se realizará la carga."
+        )
         return
 
     generar_json_desde_txt()
@@ -88,8 +94,8 @@ def main():
 
 if __name__ == "__main__":
     print("\n\n\n****************************************")
-    print(f"Proceso iniciado el dia {datetime.date.today().isoformat()} a las {datetime.datetime.now().strftime('%H:%M:%S')} horas\n")
+    print(f"Proceso iniciado el dia {date.today().isoformat()} a las {datetime.now().strftime('%H:%M:%S')} horas\n")
     main() # Ejecuta el proceso principal
-    print(f"\nProceso finalizado el dia {datetime.date.today().isoformat()} a las {datetime.datetime.now().strftime('%H:%M:%S')} horas\n")
+    print(f"\nProceso finalizado el dia {date.today().isoformat()} a las {datetime.now().strftime('%H:%M:%S')} horas\n")
     print("****************************************\n\n\n")
 
