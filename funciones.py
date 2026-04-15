@@ -1091,19 +1091,8 @@ def parse_temporary_storage_queues_segment(
     start_idx: int
 ) -> tuple[list[str], list[dict], int]:
     """
-    Parsea el segmento Temporary Storage Queues como tabla fixed-width.
-
-    Columnas esperadas:
-      TSQueue Name
-      Tsqueue Location
-      Number of Items
-      Min Item Length
-      Max Item Length
-      Tsqueue Flength
-      Tranid
-      Lastused Interval
-      Recoverable
-      Expiry Interval
+    Parsea Temporary Storage Queues usando tokens.
+    Más robusto para evitar truncamientos y permitir valores con comas.
     """
     headers = get_temporary_storage_queues_forced_columns()
 
@@ -1122,70 +1111,81 @@ def parse_temporary_storage_queues_segment(
         return False
 
     def _is_data_row(line: str) -> bool:
-        s = _normalize_fixed(line)
-        if not s.strip():
+        s = _normalize_fixed(line).strip()
+        if not s:
             return False
-        return bool(re.match(r"^\s*\S+", s))
 
-    def _spans_from_subheader(sub: str) -> list[tuple[int, int]]:
-        s = _normalize_fixed(sub)
-        spans = []
-        for m in re.finditer(r"\S(?:.*?\S)?(?=\s{2,}|$)", s):
-            if m.group(0).strip():
-                spans.append((m.start(), m.end()))
-        return spans
+        low = s.lower()
+
+        if "tsqueue name" in low or "location" in low or "interval" in low:
+            return False
+        if s.startswith("-"):
+            return False
+
+        return bool(re.match(r"^\S+", s))
+
+    def _is_valid_tsq_row(row: dict) -> bool:
+        tsq_name = str(row.get("tsQueueName", "") or "").strip()
+        tsq_loc = str(row.get("tsqueueLocation", "") or "").strip()
+        number_items = str(row.get("numberOfItems", "") or "").strip()
+        min_len = str(row.get("minItemLength", "") or "").strip()
+        max_len = str(row.get("maxItemLength", "") or "").strip()
+        flength = str(row.get("tsqueueFlength", "") or "").strip()
+        tran_id = str(row.get("tranId", "") or "").strip()
+        last_used = str(row.get("lastusedInterval", "") or "").strip()
+        recoverable = str(row.get("recoverable", "") or "").strip()
+        expiry = str(row.get("expiryInterval", "") or "").strip()
+
+        if not tsq_name:
+            return False
+
+        if " " in tsq_name and not tsq_name.startswith("�"):
+            return False
+
+        if tsq_loc and tsq_loc not in {"Main", "Auxiliary", "Aux"}:
+            return False
+
+        if number_items and not re.fullmatch(r"\d{1,3}(,\d{3})*|\d+", number_items):
+            return False
+
+        if min_len and not re.fullmatch(r"\d{1,3}(,\d{3})*|\d+", min_len):
+            return False
+
+        if max_len and not re.fullmatch(r"\d{1,3}(,\d{3})*|\d+", max_len):
+            return False
+
+        if flength and not re.fullmatch(r"\d{1,3}(,\d{3})*|\d+", flength):
+            return False
+
+        if tran_id and not re.fullmatch(r"[A-Z0-9]{3,4}", tran_id):
+            return False
+
+        if last_used and not re.fullmatch(r"\d{3}-\d{2}:\d{2}:\d{2}", last_used):
+            return False
+
+        if recoverable and recoverable not in {"Yes", "No"}:
+            return False
+
+        if expiry and not re.fullmatch(r"\d{3}-\d{2}", expiry):
+            return False
+
+        return True
 
     i = start_idx
-    subheader_line = None
-    scan_limit = min(len(lines), start_idx + 30)
 
-    # 1) Buscar línea de encabezados
-    while i < scan_limit:
+    while i < len(lines):
         if _is_omit(lines[i]):
             i += 1
             continue
 
-        line = lines[i]
-        if ("TSQueue Name" in line) and ("Tranid" in line):
-            subheader_line = line
+        low = _normalize_fixed(lines[i]).lower()
+        if "tsqueue name" in low or "location" in low or "interval" in low:
             i += 1
-            break
+            continue
 
-        i += 1
-
-    if subheader_line is None:
-        return headers, [], start_idx
-
-    spans = _spans_from_subheader(subheader_line)
-
-    # 2) Si no salen 10 columnas, recalcular con data lines
-    if len(spans) != len(headers):
-        data_samples = []
-        k = i
-        while k < len(lines) and len(data_samples) < 80:
-            if _is_omit(lines[k]):
-                k += 1
-                continue
-            if reached_segment_boundary(lines[k]) or _is_totals_line(lines[k]):
-                break
-            if _is_data_row(lines[k]):
-                data_samples.append(_normalize_fixed(lines[k]))
-            k += 1
-
-        spans = _build_spans_by_vertical_spaces_data_only(data_samples, ncols=len(headers))
-
-    if not spans or len(spans) != len(headers):
-        return headers, [], i
-
-    # saltar líneas omitibles posteriores al header
-    while i < len(lines) and _is_omit(lines[i]):
-        i += 1
+        break
 
     rows: list[dict] = []
-
-    def _norm(v: str) -> str:
-        parts = str(v).strip().split()
-        return parts[-1] if parts else ""
 
     while i < len(lines):
         if _is_omit(lines[i]):
@@ -1199,49 +1199,38 @@ def parse_temporary_storage_queues_segment(
             i += 1
             continue
 
-        row_line = _normalize_fixed(lines[i])
+        row_line = _normalize_fixed(lines[i]).strip()
+        parts = re.findall(r"\S+", row_line)
 
-        # ✅ tsQueueName por regex, para no perder primeras filas
-        mname = re.match(r"^\s*(\S+)", row_line.strip())
-        tsqueue_name = mname.group(1) if mname else ""
+        if len(parts) < 10:
+            i += 1
+            continue
 
-        # base por spans
-        tokens = [row_line[a:b].strip() for (a, b) in spans]
+        parts = parts[:10]
 
-        # izquierda: ignoramos el primer span y usamos tsQueueName manual
-        left_tokens = tokens[1:6]  # location, items, min, max, flength
+        row = {
+            "tsQueueName": str(parts[0]).strip(),
+            "tsqueueLocation": str(parts[1]).strip(),
+            "numberOfItems": str(parts[2]).strip().replace(",", ""),
+            "minItemLength": str(parts[3]).strip().replace(",", ""),
+            "maxItemLength": str(parts[4]).strip().replace(",", ""),
+            "tsqueueFlength": str(parts[5]).strip().replace(",", ""),
+            "tranId": str(parts[6]).strip(),
+            "lastusedInterval": str(parts[7]).strip(),
+            "recoverable": str(parts[8]).strip(),
+            "expiryInterval": str(parts[9]).strip(),
+        }
 
-        # derecha: desde el final de la línea
-        right_parts = re.findall(r"\S+", row_line.strip())
-        expiry_interval = right_parts[-1] if len(right_parts) >= 1 else ""
-        recoverable = right_parts[-2] if len(right_parts) >= 2 else ""
-        lastused_interval = right_parts[-3] if len(right_parts) >= 3 else ""
-        tran_id = right_parts[-4] if len(right_parts) >= 4 else ""
-
-        tokens = [tsqueue_name] + left_tokens + [tran_id, lastused_interval, recoverable, expiry_interval]
-
-        if len(tokens) < len(headers):
-            tokens += [""] * (len(headers) - len(tokens))
-        elif len(tokens) > len(headers):
-            tokens = tokens[:len(headers)]
-
-        row = {headers[idx]: tokens[idx] for idx in range(len(headers))}
-
-        row["tsQueueName"] = str(row.get("tsQueueName", "") or "").strip()
-        row["tsqueueLocation"] = str(row.get("tsqueueLocation", "") or "").strip()
-        row["numberOfItems"] = _norm(row.get("numberOfItems", ""))
-        row["minItemLength"] = _norm(row.get("minItemLength", ""))
-        row["maxItemLength"] = _norm(row.get("maxItemLength", ""))
-        row["tsqueueFlength"] = _norm(row.get("tsqueueFlength", ""))
-        row["tranId"] = str(row.get("tranId", "") or "").strip()
-        row["lastusedInterval"] = str(row.get("lastusedInterval", "") or "").strip()
-        row["recoverable"] = str(row.get("recoverable", "") or "").strip()
-        row["expiryInterval"] = str(row.get("expiryInterval", "") or "").strip()
+        if not _is_valid_tsq_row(row):
+            i += 1
+            continue
 
         rows.append(row)
         i += 1
 
     return headers, rows, i
+
+
 
 
 # Aunque no se inserta información en esta tabla actualmente, definimos la función de inserción para futuras implementaciones, usando executemany por lotes para mejor rendimiento
