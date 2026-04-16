@@ -304,7 +304,6 @@ def parse_programs_segment_fixed(lines: list[str], start_idx: int) -> tuple[list
         "progLocn",
     ]
 
-
     def _normalize_fixed(line: str) -> str:
         s = line.rstrip("\n\r")
         m = re.match(r"^(\s*)0(.*)$", s)
@@ -319,19 +318,16 @@ def parse_programs_segment_fixed(lines: list[str], start_idx: int) -> tuple[list
             return True
         return False
 
-
     def _is_data_row(line: str) -> bool:
         s = _normalize_fixed(line).strip()
 
         if not s:
             return False
 
-        # validar que empiece con nombre de programa
         if not re.match(r"^[A-Z0-9$#@]{3,}", s):
             return False
 
         return True
-
 
     def _spans_from_subheader(sub: str) -> list[tuple[int, int]]:
         s = _normalize_fixed(sub)
@@ -341,15 +337,11 @@ def parse_programs_segment_fixed(lines: list[str], start_idx: int) -> tuple[list
                 spans.append((m.start(), m.end()))
         return spans
 
-    # ---------------------------------------------------
-    # 1) Encontrar la línea subheader correcta
-    # ---------------------------------------------------
     i = start_idx
     subheader_line = None
 
     scan_limit = min(len(lines), start_idx + 30)
     while i < scan_limit:
-
         if _is_omit(lines[i]):
             i += 1
             continue
@@ -366,14 +358,11 @@ def parse_programs_segment_fixed(lines: list[str], start_idx: int) -> tuple[list
         return headers, [], start_idx
 
     spans = _spans_from_subheader(subheader_line)
-    # ---------------------------------------------------
-    # 2) Si spans no salen 12, recalcular por data_samples
-    # ---------------------------------------------------
+
     if len(spans) != len(headers):
         data_samples = []
         k = i
         while k < len(lines) and len(data_samples) < 80:
-
             if _is_omit(lines[k]):
                 k += 1
                 continue
@@ -388,13 +377,9 @@ def parse_programs_segment_fixed(lines: list[str], start_idx: int) -> tuple[list
     if not spans or len(spans) != len(headers):
         return headers, [], i
 
-    # saltar separadores posteriores al header
     while i < len(lines) and _is_omit(lines[i]):
         i += 1
 
-    # ---------------------------------------------------
-    # 3) Parsear filas fixed-width
-    # ---------------------------------------------------
     rows: list[dict] = []
 
     def _norm(v: str) -> str:
@@ -402,7 +387,6 @@ def parse_programs_segment_fixed(lines: list[str], start_idx: int) -> tuple[list
         return parts[-1] if parts else ""
 
     while i < len(lines):
-
         if _is_omit(lines[i]):
             i += 1
             continue
@@ -416,22 +400,17 @@ def parse_programs_segment_fixed(lines: list[str], start_idx: int) -> tuple[list
 
         row_line = _normalize_fixed(lines[i])
 
-        # programName por regex
         mname = re.match(r"^\s*([A-Z0-9$#@]{3,})\b", row_line.strip())
         program_name = mname.group(1) if mname else ""
 
-        # 2) columnas intermedias por spans, pero las últimas 2 desde la derecha
         middle_tokens = [row_line[a:b].strip() for (a, b) in spans[1:-2]]
 
-        # extraer programSize y progLocn desde la derecha
         right_parts = re.findall(r"\S+", row_line.strip())
-
         prog_locn = right_parts[-1] if len(right_parts) >= 1 else ""
         program_size = right_parts[-2] if len(right_parts) >= 2 else ""
 
         tokens = [program_name] + middle_tokens + [program_size, prog_locn]
 
-        # asegurar largo exacto
         if len(tokens) < len(headers):
             tokens += [""] * (len(headers) - len(tokens))
         elif len(tokens) > len(headers):
@@ -439,20 +418,41 @@ def parse_programs_segment_fixed(lines: list[str], start_idx: int) -> tuple[list
 
         row = {headers[idx]: tokens[idx] for idx in range(len(headers))}
 
+        # reconstrucción con tokens reales para evitar truncamientos
+        parts = re.findall(r"\S+", row_line)
+
+        if len(parts) >= 2:
+            row["dataLocExecKey"] = parts[1].strip()
+
+        if len(parts) >= 5:
+            row["totalFecthTime"] = parts[4].strip()
+
+        if len(parts) >= 6:
+            row["AverageFetchTime"] = parts[5].strip()
+
+        if len(parts) >= 7:
+            row["libraryName"] = parts[6].strip()
+
+        if len(parts) >= 8:
+            row["libraryOffset"] = parts[7].strip()
+
         for kf in ("timesUsed", "timesFetched", "timesNewCopy", "timesRemoved"):
             row[kf] = _norm(row.get(kf, ""))
 
-        row["programSize"] = str(row.get("programSize", "") or "").strip()
+        row["programSize"] = str(row.get("programSize", "") or "").replace(",", "").strip()
         row["totalFecthTime"] = str(row.get("totalFecthTime", "") or "").strip()
         row["AverageFetchTime"] = str(row.get("AverageFetchTime", "") or "").strip()
         row["dataLocExecKey"] = str(row.get("dataLocExecKey", "") or "").strip()
         row["libraryName"] = str(row.get("libraryName", "") or "").strip()
         row["libraryOffset"] = str(row.get("libraryOffset", "") or "").strip()
         row["progLocn"] = str(row.get("progLocn", "") or "").strip()
+
         rows.append(row)
         i += 1
 
     return headers, rows, i
+
+
 
 
 # Devuelve la lista de columnas forzadas para un segmento específico, en el orden esperado, o None si no hay columnas forzadas para ese segmento
