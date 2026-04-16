@@ -50,15 +50,15 @@ CREATE TABLE dbo.cics_programs
     fecha DATE NOT NULL,
     programName NVARCHAR(100) NULL,
     dataLocExecKey NVARCHAR(50) NULL,
-    timesUsed NVARCHAR(50) NULL,
-    timesFetched NVARCHAR(50) NULL,
+    timesUsed INT NULL,
+    timesFetched INT NULL,
     totalFecthTime NVARCHAR(50) NULL,
     AverageFetchTime NVARCHAR(50) NULL,
     libraryName NVARCHAR(100) NULL,
-    libraryOffset NVARCHAR(50) NULL,
-    timesNewCopy NVARCHAR(50) NULL,
-    timesRemoved NVARCHAR(50) NULL,
-    programSize NVARCHAR(50) NULL,
+    libraryOffset INT NULL,
+    timesNewCopy INT NULL,
+    timesRemoved INT NULL,
+    programSize INT NULL,
     progLocn NVARCHAR(50) NULL
 );
 GO
@@ -95,12 +95,12 @@ CREATE TABLE dbo.cics_transactions
     dynamic NVARCHAR(50) NULL,
     isolate NVARCHAR(50) NULL,
     taskDataLocationKey NVARCHAR(255) NULL,
-    attachCount NVARCHAR(50) NULL,
-    restartCount NVARCHAR(50) NULL,
-    dynamicLocal NVARCHAR(50) NULL,
-    remoteStarts NVARCHAR(50) NULL,
-    storageViols NVARCHAR(50) NULL,
-    abendCount NVARCHAR(50) NULL
+    attachCount INT NULL,
+    restartCount INT NULL,
+    dynamicLocal INT NULL,
+    remoteStarts INT NULL,
+    storageViols INT NULL,
+    abendCount INT NULL
 );
 GO
 
@@ -152,10 +152,10 @@ CREATE TABLE dbo.cics_temporary_storage_queues
     fecha DATE NOT NULL,
     tsQueueName NVARCHAR(100) NULL,
     tsqueueLocation NVARCHAR(50) NULL,
-    numberOfItems NVARCHAR(50) NULL,
-    minItemLength NVARCHAR(50) NULL,
-    maxItemLength NVARCHAR(50) NULL,
-    tsqueueFlength NVARCHAR(50) NULL,
+    numberOfItems INT NULL,
+    minItemLength INT NULL,
+    maxItemLength INT NULL,
+    tsqueueFlength INT NULL,
     tranId NVARCHAR(50) NULL,
     lastusedInterval NVARCHAR(50) NULL,
     recoverable NVARCHAR(20) NULL,
@@ -173,5 +173,47 @@ GO
 
 ALTER TABLE dbo.cics_temporary_storage_queues
 ADD CONSTRAINT FK_cics_temporary_storage_queues_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+IF OBJECT_ID('dbo.cics_files', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_files;
+GO
+
+CREATE TABLE dbo.cics_files
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    fileName NVARCHAR(150) NULL,
+    accessMethod NVARCHAR(50) NULL,
+    fileType NVARCHAR(50) NULL,
+    remoteFileName NVARCHAR(150) NULL,
+    remoteSystem NVARCHAR(100) NULL,
+    lsrPool NVARCHAR(50) NULL,
+    rls NVARCHAR(20) NULL,
+    dataTableType NVARCHAR(50) NULL,
+    cfdtPoolName NVARCHAR(100) NULL,
+    recoveryStatus NVARCHAR(50) NULL,
+    strings INT NULL,
+    buffersIndex INT NULL,
+    buffersData INT NULL
+);
+
+
+GO
+
+
+CREATE INDEX IX_cics_files_archivo_fecha
+ON dbo.cics_files(archivo, fecha);
+GO
+
+CREATE INDEX IX_cics_files_fileName
+ON dbo.cics_files(fileName);
+GO
+
+ALTER TABLE dbo.cics_files
+ADD CONSTRAINT FK_cics_files_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO

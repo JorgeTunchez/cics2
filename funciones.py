@@ -9,6 +9,22 @@ from datetime import datetime
 boolPrueba = False
 cantidadRegistroPrueba = 5
 
+# define una función para convertir un valor a entero o None si no es posible
+def to_int_or_none(value):
+    if value is None:
+        return None
+
+    s = str(value).strip().replace(",", "")
+
+    if s == "":
+        return None
+
+    if not s.isdigit():
+        return None
+
+    return int(s)
+
+
 
 # Define una función para obtener la fecha del encabezado de un archivo, buscando un patrón específico y formateando la fecha encontrada
 def obtener_fecha_encabezado(file_path: Path) -> str:
@@ -727,6 +743,7 @@ def upsert_segmento(cursor, segmento_nombre: str) -> int:
 def insert_programs_rows(cursor, archivo_id: int, fecha: str, rows: list[dict], batch_size: int = 1000) -> int:
     """
     Inserta filas del segmento Programs en cics_programs usando executemany por lotes.
+    Adaptada para columnas INT.
     """
 
     def _guess_program_name_from_row(r: dict) -> str:
@@ -780,21 +797,21 @@ def insert_programs_rows(cursor, archivo_id: int, fecha: str, rows: list[dict], 
             continue
 
         dataLocExecKey = str(r.get("dataLocExecKey", "") or "").strip()
-        timesUsed = _normalize_program_counter(str(r.get("timesUsed", "") or ""))
-        timesFetched = _normalize_program_counter(str(r.get("timesFetched", "") or ""))
+
+        timesUsed = to_int_or_none(_normalize_program_counter(str(r.get("timesUsed", "") or "")))
+        timesFetched = to_int_or_none(_normalize_program_counter(str(r.get("timesFetched", "") or "")))
+
         totalFecthTime = str(r.get("totalFecthTime", "") or "").strip()
         AverageFetchTime = str(r.get("AverageFetchTime", "") or "").strip()
         libraryName = str(r.get("libraryName", "") or "").strip()
 
-        libraryOffset_raw = str(r.get("libraryOffset", "") or "").strip()
-        libraryOffset = _normalize_program_counter(libraryOffset_raw) if libraryOffset_raw else ""
+        libraryOffset = to_int_or_none(
+            _normalize_program_counter(str(r.get("libraryOffset", "") or ""))
+        )
 
-        timesNewCopy = _normalize_program_counter(str(r.get("timesNewCopy", "") or ""))
-        timesRemoved = _normalize_program_counter(str(r.get("timesRemoved", "") or ""))
-
-        programSize_raw = str(r.get("programSize", "") or "").strip()
-        programSize = programSize_raw.replace(",", "") if programSize_raw else ""
-
+        timesNewCopy = to_int_or_none(_normalize_program_counter(str(r.get("timesNewCopy", "") or "")))
+        timesRemoved = to_int_or_none(_normalize_program_counter(str(r.get("timesRemoved", "") or "")))
+        programSize = to_int_or_none(str(r.get("programSize", "") or ""))
         progLocn = str(r.get("progLocn", "") or "").strip()
 
         batch.append((
@@ -835,6 +852,7 @@ def insert_programs_rows(cursor, archivo_id: int, fecha: str, rows: list[dict], 
 def insert_transactions_rows(cursor, archivo_id: int, fecha: str, rows: list[dict], batch_size: int = 1000) -> int:
     """
     Inserta filas del segmento Transactions en cics_transactions usando executemany por lotes.
+    Adaptada para columnas INT.
     """
 
     sql = """
@@ -868,12 +886,13 @@ def insert_transactions_rows(cursor, archivo_id: int, fecha: str, rows: list[dic
         dynamic = str(r.get("dynamic", "") or "")
         isolate = str(r.get("isolate", "") or "")
         taskDataLocationKey = str(r.get("taskDataLocationKey", "") or "")
-        attachCount = str(r.get("attachCount", "") or "")
-        restartCount = str(r.get("restartCount", "") or "")
-        dynamicLocal = str(r.get("dynamicLocal", "") or "")
-        remoteStarts = str(r.get("remoteStarts", "") or "")
-        storageViols = str(r.get("storageViols", "") or "")
-        abendCount = str(r.get("abendCount", "") or "")
+
+        attachCount = to_int_or_none(r.get("attachCount", ""))
+        restartCount = to_int_or_none(r.get("restartCount", ""))
+        dynamicLocal = to_int_or_none(r.get("dynamicLocal", ""))
+        remoteStarts = to_int_or_none(r.get("remoteStarts", ""))
+        storageViols = to_int_or_none(r.get("storageViols", ""))
+        abendCount = to_int_or_none(r.get("abendCount", ""))
 
         tranId = re.sub(r"\s+", "", tranId).upper()
         tranClass = re.sub(r"\s+", "", tranClass).upper()
@@ -1243,7 +1262,7 @@ def insert_temporary_storage_queues_rows(
 ) -> int:
     """
     Inserta filas del segmento Temporary Storage Queues en cics_temporary_storage_queues.
-    Usa executemany por lotes para mejor rendimiento.
+    Adaptada para columnas INT.
     """
     sql = """
     INSERT INTO cics_temporary_storage_queues
@@ -1277,10 +1296,10 @@ def insert_temporary_storage_queues_rows(
             continue
 
         tsqueueLocation = str(r.get("tsqueueLocation", "") or "").strip()
-        numberOfItems = str(r.get("numberOfItems", "") or "").strip()
-        minItemLength = str(r.get("minItemLength", "") or "").strip()
-        maxItemLength = str(r.get("maxItemLength", "") or "").strip()
-        tsqueueFlength = str(r.get("tsqueueFlength", "") or "").strip()
+        numberOfItems = to_int_or_none(r.get("numberOfItems", ""))
+        minItemLength = to_int_or_none(r.get("minItemLength", ""))
+        maxItemLength = to_int_or_none(r.get("maxItemLength", ""))
+        tsqueueFlength = to_int_or_none(r.get("tsqueueFlength", ""))
         tranId = str(r.get("tranId", "") or "").strip()
         lastusedInterval = str(r.get("lastusedInterval", "") or "").strip()
         recoverable = str(r.get("recoverable", "") or "").strip()
@@ -1319,6 +1338,8 @@ def insert_temporary_storage_queues_rows(
 
 
 
+
+
 def get_files_forced_columns() -> list[str]:
     return [
         "fileName",
@@ -1344,7 +1365,7 @@ def parse_files_segment(
 ) -> tuple[list[str], list[dict], int]:
     """
     Parsea el segmento Files usando tokens por espacios.
-    Más robusto cuando muchas columnas vienen vacías.
+    Evita guardar encabezados como registros.
     """
 
     headers = get_files_forced_columns()
@@ -1363,22 +1384,52 @@ def parse_files_segment(
             return True
         return False
 
+    def _looks_like_header_text(s: str) -> bool:
+        low = s.lower()
+        header_words = [
+            "filename", "file name",
+            "accessmethod", "access method", "access",
+            "filetype", "file type", "file",
+            "remotefilename", "remotefilename", "remote file", "remote",
+            "remotesystem", "remote system",
+            "lsrpool", "lsr pool",
+            "datatabletype", "data table type",
+            "cfdtpoolname", "cfdt pool name",
+            "recoverystatus", "recovery status",
+            "strings",
+            "buffersindex", "buffers index",
+            "buffersdata", "buffers data",
+            "table", "data"
+        ]
+        return any(word in low for word in header_words)
+
     def _is_data_row(line: str) -> bool:
         s = _normalize_fixed(line).strip()
         if not s:
             return False
 
-        low = s.lower()
-
-        # descartar encabezados
-        if "filename" in low or "accessmethod" in low or "access method" in low:
-            return False
-        if "recoverystatus" in low or "buffersindex" in low or "buffersdata" in low:
-            return False
         if s.startswith("-"):
             return False
 
-        return bool(re.match(r"^\S+", s))
+        # descartar encabezados
+        if _looks_like_header_text(s):
+            return False
+
+        # una fila real debe empezar con nombre de archivo válido
+        first = re.findall(r"\S+", s)
+        if not first:
+            return False
+
+        first_token = first[0]
+
+        # evita tomar textos de encabezado como "Access", "File", etc.
+        if first_token.lower() in {
+            "filename", "access", "file", "remote", "lsr",
+            "table", "data", "buffers", "recovery"
+        }:
+            return False
+
+        return True
 
     i = start_idx
 
@@ -1389,15 +1440,7 @@ def parse_files_segment(
             continue
 
         low = _normalize_fixed(lines[i]).lower()
-
-        # líneas de encabezado del bloque Files
-        if (
-            "filename" in low
-            or "access method" in low
-            or "accessmethod" in low
-            or "buffersindex" in low
-            or "recoverystatus" in low
-        ):
+        if _looks_like_header_text(low):
             i += 1
             continue
 
@@ -1439,7 +1482,6 @@ def parse_files_segment(
             buffers_data = tail[-1]
             middle = tail[:-6]
         else:
-            # fallback por si la fila viene incompleta
             padded = ([""] * (6 - len(tail))) + tail
             lsr_pool, rls, recovery_status, strings, buffers_index, buffers_data = padded
             middle = []
@@ -1467,12 +1509,15 @@ def parse_files_segment(
             "buffersData": str(buffers_data).strip(),
         }
 
+        # filtro final extra por si algún header se coló
+        if _looks_like_header_text(" ".join(row.values())):
+            i += 1
+            continue
+
         rows.append(row)
         i += 1
 
     return headers, rows, i
-
-
 
 # definición de la función de inserción para el segmento Files
 def insert_files_rows(
@@ -1484,6 +1529,7 @@ def insert_files_rows(
 ) -> int:
     """
     Inserta filas del segmento Files en cics_files usando executemany por lotes.
+    Adaptada para strings, buffersIndex y buffersData como INT.
     """
     sql = """
     INSERT INTO cics_files
@@ -1505,7 +1551,6 @@ def insert_files_rows(
     except Exception:
         pass
 
-
     for r in rows:
         total_rows += 1
 
@@ -1513,7 +1558,6 @@ def insert_files_rows(
             continue
 
         fileName = str(r.get("fileName", "") or "").strip()
-
         if not fileName:
             skipped_empty_name += 1
             continue
@@ -1527,9 +1571,10 @@ def insert_files_rows(
         dataTableType = str(r.get("dataTableType", "") or "").strip()
         cfdtPoolName = str(r.get("cfdtPoolName", "") or "").strip()
         recoveryStatus = str(r.get("recoveryStatus", "") or "").strip()
-        strings = str(r.get("strings", "") or "").strip()
-        buffersIndex = str(r.get("buffersIndex", "") or "").strip()
-        buffersData = str(r.get("buffersData", "") or "").strip()
+
+        strings = to_int_or_none(r.get("strings", ""))
+        buffersIndex = to_int_or_none(r.get("buffersIndex", ""))
+        buffersData = to_int_or_none(r.get("buffersData", ""))
 
         batch.append((
             archivo_id,
