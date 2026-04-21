@@ -31,12 +31,14 @@ def obtener_fecha_encabezado(file_path: Path) -> str:
     """
     Busca la fecha en el encabezado del archivo.
     Retorna la fecha en formato YYYY-MM-DD.
-    Ejemplo origen: 12/09/2025
+    Soporta:
+      - DD/MM/YYYY
+      - MM/DD/YYYY
     """
     patron = re.compile(r"Date\s+(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
 
     with file_path.open("r", encoding="utf-8", errors="ignore") as f:
-        for _ in range(20):  # basta con revisar las primeras líneas
+        for _ in range(20):
             linea = f.readline()
             if not linea:
                 break
@@ -44,8 +46,18 @@ def obtener_fecha_encabezado(file_path: Path) -> str:
             m = patron.search(linea)
             if m:
                 fecha_txt = m.group(1).strip()
-                fecha_obj = datetime.strptime(fecha_txt, "%d/%m/%Y")
-                return fecha_obj.strftime("%Y-%m-%d")
+
+                formatos = ["%d/%m/%Y", "%m/%d/%Y"]
+                for fmt in formatos:
+                    try:
+                        fecha_obj = datetime.strptime(fecha_txt, fmt)
+                        return fecha_obj.strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
+
+                raise ValueError(
+                    f"La fecha '{fecha_txt}' del archivo {file_path.name} no coincide con formatos esperados."
+                )
 
     raise ValueError(f"No se encontró la fecha en el encabezado del archivo: {file_path.name}")
 
@@ -1609,3 +1621,54 @@ def insert_files_rows(
     )
 
     return inserted
+
+
+# Función para obtener las carpetas de un directorio de entrada, filtrando solo aquellas que tengan un nombre con formato de fecha YYYY-MM-DD, y ordenándolas de forma descendente por fecha.
+def obtener_carpetas_fecha_ordenadas(directorio_entrada: Path) -> list[tuple[str, Path]]:
+    carpetas = []
+
+    for item in directorio_entrada.iterdir():
+        if not item.is_dir():
+            continue
+
+        nombre = item.name.strip()
+
+        try:
+            fecha = datetime.strptime(nombre, "%Y-%m-%d").date()
+            carpetas.append((fecha.isoformat(), item))
+        except ValueError:
+            continue
+
+    carpetas.sort(key=lambda x: x[0], reverse=True)
+    return carpetas
+
+
+# Función para validar si una carpeta ya fue procesada, consultando la tabla cics_cargas por una combinación de fecha, nombre de carpeta y estado 'PROCESADO'.
+def carpeta_ya_procesada(fecha_carpeta: str, nombre_carpeta: str) -> bool:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM cics_cargas
+        WHERE fecha = ? AND carpeta = ? AND estado = 'PROCESADO'
+    """, (fecha_carpeta, nombre_carpeta))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return (row[0] or 0) > 0
+
+
+# Función para registrar una carpeta como procesada, insertando un nuevo registro en la tabla cics_cargas con la fecha, nombre de carpeta y estado 'PROCESADO'.
+def registrar_carpeta_procesada(fecha_carpeta: str, nombre_carpeta: str) -> None:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO cics_cargas (fecha, carpeta, estado)
+        VALUES (?, ?, 'PROCESADO')
+    """, (fecha_carpeta, nombre_carpeta))
+
+    conn.commit()
+    conn.close()

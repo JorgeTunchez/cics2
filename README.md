@@ -1,160 +1,159 @@
-# 📊 CICS Parser & Analyzer
+📊 CICS Analyzer – Procesamiento de Reportes
 
-Este proyecto permite procesar archivos tipo **CICSADM** (.TXT), extraer información relevante y almacenarla en una base de datos SQL Server para su análisis.
+Este proyecto procesa archivos .TXT generados por CICS, los convierte a formato JSON y posteriormente los inserta en base de datos SQL Server para análisis.
 
-Actualmente soporta los siguientes segmentos:
-
-* Programs
-* Transactions
-* Temporary Storage Queues
-* Files
-
----
-
-## ⚙️ Requisitos
-
-* Python 3.10+
-* SQL Server
-* Librerías Python (según tu proyecto, por ejemplo):
-
-  * pyodbc
-  * pathlib (nativo)
-  * json (nativo)
-
----
-
-## 📁 Estructura del proyecto
-
-```
+🚀 Flujo General
+Se leen archivos .TXT desde el directorio ENTRADA
+Se transforman a JSON
+Se almacenan en SALIDA
+Se insertan en base de datos
+Se registra la carpeta como procesada
+📁 Estructura del Proyecto
 DEPCICS2/
+├── ENTRADA/
+│   ├── 2025-09-12/
+│   │   ├── CICSADM.TXT
+│   │   ├── CICSAORP.TXT
+│   │   ├── CICSFILE.TXT
+│   │   ├── CICSMANT.TXT
+│   │   ├── CICSPEP.TXT
+│   │   └── CICSVAR.TXT
+│   └── 2025-09-11/
+│       └── ...
 │
-├── ENTRADA/        # Archivos .TXT de entrada (OBLIGATORIO)
-├── SALIDA/         # Archivos .JSON generados (OBLIGATORIO)
+├── SALIDA/
+│   ├── 2025-09-12/
+│   │   ├── CICSADM.JSON
+│   │   └── ...
 │
-├── funciones.py    # Lógica principal de parsing e inserción
-├── conexionDB.py   # Conexión a base de datos
-├── main.py         # Punto de ejecución
-├── scriptBD.sql    # Script de creación de tablas
-└── .gitignore
-```
+├── funciones.py
+├── main.py
+├── conexionBD.py
+├── scriptBD.sql
+└── README.md
+⚠️ REGLAS IMPORTANTES
+📌 1. Estructura obligatoria
 
----
+Todos los archivos deben estar dentro de carpetas con formato:
 
-## ⚠️ IMPORTANTE (OBLIGATORIO)
+YYYY-MM-DD
+Cada carpeta debe contener exactamente 6 archivos TXT
+📌 2. Validación de fecha
+La fecha se obtiene desde el encabezado de los archivos
+Todos los archivos dentro de la carpeta deben tener la misma fecha
+La fecha del encabezado debe coincidir con el nombre de la carpeta
 
-El proyecto depende de los siguientes directorios:
+Ejemplo:
 
-### 📥 ENTRADA
+Carpeta: 2026-04-20
+Encabezado: Date 04/20/2026
+📌 3. Procesamiento automático
 
-* Aquí deben colocarse los archivos `.TXT` provenientes de CICS
-* Ejemplo:
+El sistema:
 
-  ```
-  ENTRADA/
-  ├── CICSADM.TXT
-  ├── CICSVAR.TXT
-  ```
+Detecta la carpeta más reciente
+Procesa desde la más reciente hacia atrás
+Omite carpetas ya procesadas
+📌 4. Control de cargas
 
-### 📤 SALIDA
+Se utiliza la tabla:
 
-* Aquí se generan automáticamente los archivos `.JSON`
-* No se deben modificar manualmente
+cics_cargas
 
-👉 Si estos directorios no existen, el proceso fallará.
+Para evitar reprocesar información ya cargada.
 
----
+🧠 Lógica del Proceso
 
-## 🚀 Ejecución
+Por cada carpeta:
 
-1. Colocar archivos `.TXT` en la carpeta `ENTRADA`
-2. Ejecutar el proyecto:
+Validar cantidad de archivos
+Validar fecha única
+Verificar si ya fue procesada
+Generar JSON
+Insertar en BD
+Registrar carga
+🗃️ Tablas principales
+🔹 cics_programs
+Contiene información de programas
+Campos numéricos convertidos a INT
+🔹 cics_transactions
+Contiene transacciones
+Métricas como attachCount, abendCount en INT
+🔹 cics_temporary_storage_queues
+Información de colas temporales
+Longitudes y cantidades en INT
+🔹 cics_files
+Información de archivos CICS
+Campos numéricos:
+strings
+buffersIndex
+buffersData
+🔢 Conversión de datos
 
-```bash
+Los siguientes campos se convierten a INT:
+
+Programs:
+timesUsed
+timesFetched
+libraryOffset
+timesNewCopy
+timesRemoved
+programSize
+Transactions:
+attachCount
+restartCount
+dynamicLocal
+remoteStarts
+storageViols
+abendCount
+Temporary Storage Queues:
+numberOfItems
+minItemLength
+maxItemLength
+tsqueueFlength
+Files:
+strings
+buffersIndex
+buffersData
+🧹 Limpieza de datos
+Se eliminan comas en números (1,344 → 1344)
+Valores inválidos se convierten a NULL
+Se evitan encabezados en inserciones
+⚙️ Ejecución
 python main.py
-```
-
-3. El sistema:
-
-* Procesa cada archivo
-* Genera JSON en `SALIDA`
-* Inserta datos en base de datos
-
----
-
-## 🗄️ Base de datos
-
-Las siguientes tablas deben existir previamente:
-
-* `cics_archivos`
-* `cics_segmento`
-* `cics_programs`
-* `cics_transactions`
-* `cics_temporary_storage_queues`
-* `cics_files`
-
-👉 Puedes usar `scriptBD.sql` para crearlas.
-
----
-
-## 📊 Tipos de datos procesados
-
-### 🔹 Programs
-
-Información sobre programas ejecutados en CICS.
-
-### 🔹 Transactions
-
-Relación entre transacciones y programas.
-
-### 🔹 Temporary Storage Queues
-
-Colas temporales utilizadas por CICS.
-
-### 🔹 Files
-
-Configuración de archivos (VSAM, buffers, recovery, etc.).
-
----
-
-## ⚡ Rendimiento
-
-* Se utilizan inserciones por lotes (`executemany`)
-* Optimizado para grandes volúmenes de datos
-* Tiempo promedio: ~20 minutos para cargas grandes (puede mejorar con paralelización)
-
----
-
-## 🛠️ Recomendaciones
-
-* No subir archivos de `ENTRADA` ni `SALIDA` al repositorio
-* Mantener `.gitignore` actualizado
-* Validar datos antes de ejecutar consultas analíticas
-
----
-
-## 🧪 Ejemplo de consulta
-
-```sql
+🛠️ Recomendaciones
+No mezclar archivos de diferentes fechas en una carpeta
+Verificar que todos los archivos estén completos
+Evitar modificar manualmente los JSON generados
+Revisar logs en consola para detectar errores
+📊 Ejemplo de consulta
 SELECT TOP 10
     fileName,
-    SUM(TRY_CAST(buffersData AS INT)) AS total_buffers
+    SUM(buffersData) AS total_buffers
 FROM cics_files
 GROUP BY fileName
 ORDER BY total_buffers DESC;
-```
+🧾 Logs del sistema
 
----
+El sistema muestra:
 
-## 📌 Notas adicionales
+Archivos procesados
+JSON generados
+Registros insertados
+Errores detectados
+📌 Estado del Proyecto
 
-* El parser está diseñado para tolerar formatos inconsistentes del reporte CICS
-* Se aplican normalizaciones para evitar errores de conversión
-* Algunos campos pueden venir vacíos dependiendo del entorno CICS
+✔ Procesamiento por carpetas
+✔ Control de duplicados
+✔ Conversión a tipos numéricos
+✔ Parsing robusto por tokens
+✔ Evita encabezados en BD
 
----
+🚀 Próximos pasos (opcional)
+Dashboard de métricas
+Optimización con paralelismo
+Alertas de inconsistencias
+Automatización programada (Job)
+👨‍💻 Autor
 
-## 👨‍💻 Autor
-
-Proyecto desarrollado para análisis y auditoría de entornos CICS.
-
----
+Proyecto desarrollado para análisis de reportes CICS.

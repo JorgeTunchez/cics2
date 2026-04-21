@@ -217,3 +217,17 @@ ALTER TABLE dbo.cics_files
 ADD CONSTRAINT FK_cics_files_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
+
+CREATE TABLE dbo.cics_cargas
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    fecha DATE NOT NULL,
+    carpeta NVARCHAR(100) NOT NULL,
+    fecha_proceso DATETIME NOT NULL DEFAULT GETDATE(),
+    estado NVARCHAR(20) NOT NULL DEFAULT 'PROCESADO'
+);
+GO
+
+CREATE UNIQUE INDEX UX_cics_cargas_fecha_carpeta
+ON dbo.cics_cargas(fecha, carpeta);
+GO

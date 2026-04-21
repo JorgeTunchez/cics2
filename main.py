@@ -2,7 +2,6 @@ import os
 import json
 from datetime import date, datetime
 from pathlib import Path
-#from funciones_old import *
 from funciones import *
 
 # =========================
@@ -14,17 +13,20 @@ DIRECTORIO_SALIDA = PROJECT_ROOT / "SALIDA"
 
 DIRECTORIO_SALIDA.mkdir(exist_ok=True)
 
-validar_cantidad_archivos(DIRECTORIO_REPORTES, 6)
-fechaActual = validar_fecha_unica_archivos(DIRECTORIO_REPORTES)
-print(f"Fecha validada desde encabezados: {fechaActual}")
 
+def generar_json_desde_txt(directorio_fecha: Path, directorio_salida_fecha: Path):
+    """
+    Lee todos los TXT de una carpeta de fecha y genera un JSON por cada uno
+    dentro de su carpeta correspondiente en SALIDA.
+    """
+    if not directorio_fecha.exists():
+        raise FileNotFoundError(f"No existe el directorio: {directorio_fecha}")
 
-def generar_json_desde_txt():
-    """Lee todos los TXT y genera un JSON por cada uno en JSON_SALIDA."""
-    if not DIRECTORIO_REPORTES.exists():
-        raise FileNotFoundError(f"No existe el directorio: {DIRECTORIO_REPORTES}")
+    directorio_salida_fecha.mkdir(parents=True, exist_ok=True)
 
-    archivos = [p for p in DIRECTORIO_REPORTES.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
+    archivos = sorted(
+        [p for p in directorio_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
+    )
 
     for archivo_path in archivos:
         archivo = archivo_path.name.upper()
@@ -34,7 +36,7 @@ def generar_json_desde_txt():
             data = parse_cicsadm_lite(archivo_path)
 
             nombre_json = archivo.replace(".TXT", ".JSON")
-            salida_path = DIRECTORIO_SALIDA / nombre_json
+            salida_path = directorio_salida_fecha / nombre_json
 
             salida_path.write_text(
                 json.dumps(data, indent=2, ensure_ascii=False),
@@ -48,9 +50,13 @@ def generar_json_desde_txt():
             print(f"  ❌ Error procesando {archivo}: {e}\n")
 
 
-def insertar_bd_desde_json():
-    """Recorre JSON_SALIDA y manda a BD solo (archivos, segmento, programs, transactions)."""
-    archivos_json = [p for p in DIRECTORIO_SALIDA.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
+def insertar_bd_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+    """
+    Recorre la carpeta de JSON de una fecha específica y manda a BD.
+    """
+    archivos_json = sorted(
+        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
+    )
 
     if not archivos_json:
         print("No hay archivos JSON para insertar en BD.")
@@ -66,36 +72,80 @@ def insertar_bd_desde_json():
 
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
-
-            # tu función espera nombreArchivo, puede ser TXT o JSON
-            # aquí usamos el nombre base como TXT para mantener consistencia
             nombre_txt = nombre_archivo_json.replace(".JSON", ".TXT")
-            insertarValidacionSistema(fechaActual, nombre_txt, data)
+            insertarValidacionSistema(fecha_actual, nombre_txt, data)
 
         except Exception as e:
             print(f"  ❌ Error insertando desde {nombre_archivo_json}: {e}\n")
+            raise
 
 
+def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
+    """
+    Procesa una carpeta de fecha:
+    - valida cantidad de archivos
+    - valida fecha única en encabezados
+    - valida que no exista ya la carga
+    - genera JSON
+    - inserta a BD
+    - registra carpeta procesada
+    """
+    nombre_carpeta = ruta_carpeta.name
+    print(f"\nProcesando carpeta: {nombre_carpeta}")
 
-def main():
-    # Si quieres reactivar validación por fecha, pon tu función aquí.
-    cantidadRegFechaActual = validar_carga_fecha(fechaActual)
+    if carpeta_ya_procesada(fecha_carpeta, nombre_carpeta):
+        print(f"Carpeta ya procesada anteriormente: {nombre_carpeta}. Se omite.")
+        return
 
-    if cantidadRegFechaActual > 0:
+    validar_cantidad_archivos(ruta_carpeta, 6)
+
+    fecha_encabezado = validar_fecha_unica_archivos(ruta_carpeta)
+    print(f"Fecha validada desde encabezados: {fecha_encabezado}")
+
+    # Validación adicional: el nombre de carpeta debe coincidir con la fecha del encabezado
+    if fecha_encabezado != fecha_carpeta:
+        raise ValueError(
+            f"La carpeta '{nombre_carpeta}' indica fecha {fecha_carpeta}, "
+            f"pero los archivos contienen fecha {fecha_encabezado}."
+        )
+
+    cantidad_registros = validar_carga_fecha(fecha_encabezado)
+    if cantidad_registros > 0:
         print(
-            f"Ya existen {cantidadRegFechaActual} registros en base de datos "
-            f"para la fecha {fechaActual}. No se realizará la carga."
+            f"Ya existen {cantidad_registros} registros en base de datos "
+            f"para la fecha {fecha_encabezado}. No se realizará la carga de esta carpeta."
         )
         return
 
-    generar_json_desde_txt()
-    insertar_bd_desde_json()
+    directorio_salida_fecha = DIRECTORIO_SALIDA / nombre_carpeta
+
+    generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)
+    insertar_bd_desde_json(directorio_salida_fecha, fecha_encabezado)
+    registrar_carpeta_procesada(fecha_encabezado, nombre_carpeta)
+
+    print(f"✔ Carpeta procesada correctamente: {nombre_carpeta}")
+
+
+def main():
+    if not DIRECTORIO_REPORTES.exists():
+        raise FileNotFoundError(f"No existe el directorio: {DIRECTORIO_REPORTES}")
+
+    carpetas_fecha = obtener_carpetas_fecha_ordenadas(DIRECTORIO_REPORTES)
+
+    if not carpetas_fecha:
+        print("No se encontraron carpetas con formato YYYY-MM-DD en ENTRADA.")
+        return
+
+    for fecha_carpeta, ruta_carpeta in carpetas_fecha:
+        try:
+            procesar_carpeta_fecha(fecha_carpeta, ruta_carpeta)
+        except Exception as e:
+            print(f"❌ Error procesando carpeta {ruta_carpeta.name}: {e}\n")
 
 
 if __name__ == "__main__":
     print("\n\n\n****************************************")
     print(f"Proceso iniciado el dia {date.today().isoformat()} a las {datetime.now().strftime('%H:%M:%S')} horas\n")
-    main() # Ejecuta el proceso principal
+    main()
     print(f"\nProceso finalizado el dia {date.today().isoformat()} a las {datetime.now().strftime('%H:%M:%S')} horas\n")
     print("****************************************\n\n\n")
-
