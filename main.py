@@ -43,11 +43,11 @@ def generar_json_desde_txt(directorio_fecha: Path, directorio_salida_fecha: Path
                 encoding="utf-8"
             )
 
-            print(f"  ✔ Segmentos detectados: {len(data)}")
-            print(f"  ✔ JSON generado: {salida_path}\n")
+            print(f"  [OK] Segmentos detectados: {len(data)}")
+            print(f"  [OK] JSON generado: {salida_path}\n")
 
         except Exception as e:
-            print(f"  ❌ Error procesando {archivo}: {e}\n")
+            print(f"  [ERROR] Error procesando {archivo}: {e}\n")
 
 
 def insertar_bd_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
@@ -76,7 +76,7 @@ def insertar_bd_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
             insertarValidacionSistema(fecha_actual, nombre_txt, data)
 
         except Exception as e:
-            print(f"  ❌ Error insertando desde {nombre_archivo_json}: {e}\n")
+            print(f"  [ERROR] Error insertando desde {nombre_archivo_json}: {e}\n")
             raise
 
 
@@ -123,7 +123,7 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
     insertar_bd_desde_json(directorio_salida_fecha, fecha_encabezado)
     registrar_carpeta_procesada(fecha_encabezado, nombre_carpeta)
 
-    print(f"✔ Carpeta procesada correctamente: {nombre_carpeta}")
+    print(f"[OK] Carpeta procesada correctamente: {nombre_carpeta}")
 
 
 def main():
@@ -140,7 +140,7 @@ def main():
         try:
             procesar_carpeta_fecha(fecha_carpeta, ruta_carpeta)
         except Exception as e:
-            print(f"❌ Error procesando carpeta {ruta_carpeta.name}: {e}\n")
+            print(f"[ERROR] Error procesando carpeta {ruta_carpeta.name}: {e}\n")
 
 
 if __name__ == "__main__":

@@ -646,6 +646,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "files",
             "transactions",
             "storage - domain subpools",
+            "system status",
         }
 
     allowed_segments = {clean_segment_title(x).lower() for x in allowed_segments}
@@ -756,6 +757,29 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
                 i = j
                 continue
 
+            # System Status
+            elif title_key == "system status":
+                columnas, data, next_j = parse_system_status_segment(lines, j)
+
+                key = unique_title(title, out)
+
+                out[key] = {
+                    "nombre": title,
+                    "tipo": "informacion",
+                    "detalles": {
+                        "columnas": columnas,
+                        "datos": data
+                    }
+                }
+
+                j = next_j
+
+                while j < len(lines) and not reached_segment_boundary(lines[j]) and not _is_totals_line(lines[j]):
+                    j += 1
+
+                i = j
+                continue
+
             # fallback
             else:
                 columnas, filas, next_j = parse_table_segment(lines, j, title)
@@ -795,7 +819,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
 
 
 # Conjunto de tablas requeridas en la base de datos para almacenar los segmentos extraídos de CICSADM Lite
-_REQUIRED_TABLES = {"cics_archivos", "cics_segmento", "cics_programs", "cics_transactions", "cics_temporary_storage_queues", "cics_files"}
+_REQUIRED_TABLES = {"cics_archivos", "cics_segmento", "cics_programs", "cics_transactions", "cics_temporary_storage_queues", "cics_files", "cics_system_status"}
 
 
 # Valida que existan las tablas requeridas en la base de datos, lanzando un error si alguna falta
@@ -804,7 +828,7 @@ def validar_tablas_requeridas(cursor) -> None:
         SELECT TABLE_NAME
         FROM INFORMATION_SCHEMA.TABLES
         WHERE TABLE_TYPE = 'BASE TABLE'
-          AND TABLE_NAME IN ('cics_archivos', 'cics_segmento', 'cics_programs', 'cics_transactions','cics_temporary_storage_queues','cics_files')
+          AND TABLE_NAME IN ('cics_archivos', 'cics_segmento', 'cics_programs', 'cics_transactions','cics_temporary_storage_queues','cics_files','cics_system_status')
     """)
     existentes = {row[0].lower() for row in cursor.fetchall()}
     faltantes = sorted(t for t in _REQUIRED_TABLES if t.lower() not in existentes)
@@ -1062,6 +1086,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Files")
     upsert_segmento(cursor, "Transactions")
     upsert_segmento(cursor, "Storage - Domain Subpools")
+    upsert_segmento(cursor, "System Status")
     conn.commit()
 
     # =====================================================
@@ -1262,13 +1287,47 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
 
         conn.commit()
 
+    # =====================================================
+    # 6) INSERTAR SYSTEM STATUS
+    # =====================================================
+    system_status_payload = None
+
+    for k, v in diccionarioSegmentos.items():
+        if str(k).strip().lower() == "system status":
+            system_status_payload = v
+            break
+
+    system_status_data = {}
+
+    if isinstance(system_status_payload, dict):
+
+        if system_status_payload.get("tipo") == "informacion":
+            detalles = system_status_payload.get("detalles") or {}
+            system_status_data = detalles.get("datos") or {}
+
+        elif "datos" in system_status_payload:
+            system_status_data = system_status_payload.get("datos") or {}
+
+    inserted_system_status = 0
+
+    if isinstance(system_status_data, dict) and system_status_data:
+        inserted_system_status = insert_system_status_row(
+            cursor,
+            archivo_id,
+            fechaActual,
+            system_status_data
+        )
+
+        conn.commit()
+
     print(
         f"Archivo: {archivo_nombre} (id={archivo_id}) | "
         f"Programs insertados: {inserted_prog} | "
         f"Temporary Storage Queues insertadas: {inserted_tsq} | "
         f"Files insertados: {inserted_files} | "
         f"Transactions insertadas: {inserted_tx} | "
-        f"Storage Domain Subpools insertados: {inserted_storage_domain}"
+        f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
+        f"System Status insertado: {inserted_system_status}"
     )
 
     conn.close()
@@ -2068,3 +2127,251 @@ def insert_storage_domain_subpool_rows(
     )
 
     return inserted
+
+
+# Funciones para el segmento System Status
+# Patrón: columnas forzadas -> parseo -> inserción
+
+def get_system_status_forced_columns() -> list[str]:
+    """
+    Retorna la lista de columnas esperadas para el segmento System Status.
+    """
+    return [
+        "mvsProductName",
+        "cicsStartup",
+        "cicsStatus",
+        "cecMachineType",
+        "vtamOpenStatus",
+        "ircStatus",
+        "ircXcfGroupName",
+        "storageProtection",
+        "transactionIsolation",
+        "reentrantPrograms",
+        "execStorageCommandChecking",
+        "forceQuasiReentrant",
+        "programAutoinstall",
+        "terminalAutoinstall",
+        "activityKeypointFrequency",
+        "logstreamDeferredForceInterval",
+        "rlsStatus",
+        "rrmsMvsStatus",
+        "db2ConnectionName",
+        "cicsTsLevel",
+        "wlmMode",
+        "wlmServer",
+        "wlmManageRegionGoals",
+        "wlmWorkloadName",
+        "wlmServiceClass",
+        "wlmReportClass",
+        "wlmResourceGroup",
+        "wlmGoalType",
+        "wlmGoalValue",
+        "wlmGoalImportance",
+        "wlmCpuCritical",
+        "wlmStorageCritical",
+        "tcpIpStatus",
+        "maxIpSockets",
+        "activeIpSockets",
+        "webGarbageCollectionInterval",
+        "terminalInputTimeoutInterval",
+    ]
+
+
+def parse_system_status_segment(lines: list[str], start_idx: int) -> tuple[list[str], dict, int]:
+    """
+    Parsea el segmento System Status (información de dos columnas con KV).
+    Retorna: (columnas, diccionario_datos, índice_siguiente)
+    """
+    
+    headers = get_system_status_forced_columns()
+    data = {h: "" for h in headers}
+    
+    # Mapeo simplificado por palabras clave
+    field_mapping = {
+        "mvs product": "mvsProductName",
+        "cics startup": "cicsStartup",
+        "cics status": "cicsStatus",
+        "cec machine": "cecMachineType",
+        "vtam open": "vtamOpenStatus",
+        "irc status": "ircStatus",
+        "irc xcf": "ircXcfGroupName",
+        "storage protection": "storageProtection",
+        "transaction isolation": "transactionIsolation",
+        "reentrant": "reentrantPrograms",
+        "exec storage": "execStorageCommandChecking",
+        "force quasi": "forceQuasiReentrant",
+        "program autoinstall": "programAutoinstall",
+        "terminal autoinstall": "terminalAutoinstall",
+        "activity keypoint": "activityKeypointFrequency",
+        "logstream deferred": "logstreamDeferredForceInterval",
+        "rls status": "rlsStatus",
+        "rrms/mvs": "rrmsMvsStatus",
+        "db2 connection": "db2ConnectionName",
+        "cics transaction server": "cicsTsLevel",
+        "mvs workload manager": "wlmMode",
+        "wlm server": "wlmServer",
+        "wlm manage": "wlmManageRegionGoals",
+        "wlm workload": "wlmWorkloadName",
+        "wlm service": "wlmServiceClass",
+        "wlm report": "wlmReportClass",
+        "wlm resource": "wlmResourceGroup",
+        "wlm goal type": "wlmGoalType",
+        "wlm goal value": "wlmGoalValue",
+        "wlm goal importance": "wlmGoalImportance",
+        "wlm cpu": "wlmCpuCritical",
+        "wlm storage": "wlmStorageCritical",
+        "tcp/ip": "tcpIpStatus",
+        "max ip": "maxIpSockets",
+        "active ip": "activeIpSockets",
+        "web garbage": "webGarbageCollectionInterval",
+        "terminal input": "terminalInputTimeoutInterval",
+    }
+    
+    i = start_idx
+    
+    while i < len(lines):
+        line = lines[i]
+        
+        if line.strip().startswith("0----") or line.strip().startswith("+_"):
+            break
+        
+        if not line.strip() or line.strip().startswith("Applid"):
+            i += 1
+            continue
+        
+        # Remover prefijo "0"
+        line_clean = re.sub(r"^\s*0\s+", "", line)
+        
+        # Intentar dividir en dos columnas
+        split_result = split_two_columns(line_clean)
+        columns = [split_result[0], split_result[1]] if split_result else [line_clean]
+        
+        for col_text in columns:
+            if not col_text or not col_text.strip():
+                continue
+            
+            # Buscar todos los pares key: value en esta columna
+            # Patrón: cualquier texto antes de ":" y cualquier texto después
+            pattern = r"([^:]+?):\s+([^:]+?)(?=$|\s{3,})"
+            matches = re.findall(pattern, col_text)
+            
+            for label_raw, value_raw in matches:
+                label = label_raw.strip()
+                value = value_raw.strip()
+                
+                # Limpiar puntos de relleno del label
+                label = re.sub(r"\.+", " ", label).strip().lower()
+                label = re.sub(r"\s+", " ", label)
+                
+                if not label or not value:
+                    continue
+                
+                # Encontrar el campo correspondiente
+                for pattern_key, column_name in field_mapping.items():
+                    if pattern_key in label:
+                        if data[column_name] == "":
+                            data[column_name] = value
+                        break
+        
+        i += 1
+    
+    return headers, data, i
+
+
+def insert_system_status_row(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    data: dict
+) -> int:
+    """
+    Inserta un registro del segmento System Status en cics_system_status.
+    Retorna 1 si se insertó correctamente, 0 si se omitió.
+    """
+    
+    sql = """
+    INSERT INTO cics_system_status
+    (
+        archivo, fecha, mvsProductName, cicsStartup, cicsStatus, cecMachineType,
+        vtamOpenStatus, ircStatus, ircXcfGroupName, storageProtection,
+        transactionIsolation, reentrantPrograms, execStorageCommandChecking,
+        forceQuasiReentrant, programAutoinstall, terminalAutoinstall,
+        activityKeypointFrequency, logstreamDeferredForceInterval, rlsStatus,
+        rrmsMvsStatus, db2ConnectionName, cicsTsLevel, wlmMode, wlmServer,
+        wlmManageRegionGoals, wlmWorkloadName, wlmServiceClass, wlmReportClass,
+        wlmResourceGroup, wlmGoalType, wlmGoalValue, wlmGoalImportance,
+        wlmCpuCritical, wlmStorageCritical, tcpIpStatus, maxIpSockets,
+        activeIpSockets, webGarbageCollectionInterval, terminalInputTimeoutInterval
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    
+    if not isinstance(data, dict):
+        print("System Status: data no es diccionario, se omite")
+        return 0
+    
+    mvsProductName = str(data.get("mvsProductName", "") or "").strip()
+    cicsStartup = str(data.get("cicsStartup", "") or "").strip()
+    cicsStatus = str(data.get("cicsStatus", "") or "").strip()
+    cecMachineType = str(data.get("cecMachineType", "") or "").strip()
+    vtamOpenStatus = str(data.get("vtamOpenStatus", "") or "").strip()
+    ircStatus = str(data.get("ircStatus", "") or "").strip()
+    ircXcfGroupName = str(data.get("ircXcfGroupName", "") or "").strip()
+    storageProtection = str(data.get("storageProtection", "") or "").strip()
+    transactionIsolation = str(data.get("transactionIsolation", "") or "").strip()
+    reentrantPrograms = str(data.get("reentrantPrograms", "") or "").strip()
+    execStorageCommandChecking = str(data.get("execStorageCommandChecking", "") or "").strip()
+    forceQuasiReentrant = str(data.get("forceQuasiReentrant", "") or "").strip()
+    programAutoinstall = str(data.get("programAutoinstall", "") or "").strip()
+    terminalAutoinstall = str(data.get("terminalAutoinstall", "") or "").strip()
+    
+    activityKeypointFrequency = to_int_or_none(data.get("activityKeypointFrequency", ""))
+    logstreamDeferredForceInterval = to_int_or_none(data.get("logstreamDeferredForceInterval", ""))
+    
+    rlsStatus = str(data.get("rlsStatus", "") or "").strip()
+    rrmsMvsStatus = str(data.get("rrmsMvsStatus", "") or "").strip()
+    db2ConnectionName = str(data.get("db2ConnectionName", "") or "").strip()
+    
+    cicsTsLevel = str(data.get("cicsTsLevel", "") or "").strip()
+    wlmMode = str(data.get("wlmMode", "") or "").strip()
+    wlmServer = str(data.get("wlmServer", "") or "").strip()
+    wlmManageRegionGoals = str(data.get("wlmManageRegionGoals", "") or "").strip()
+    wlmWorkloadName = str(data.get("wlmWorkloadName", "") or "").strip()
+    wlmServiceClass = str(data.get("wlmServiceClass", "") or "").strip()
+    wlmReportClass = str(data.get("wlmReportClass", "") or "").strip()
+    wlmResourceGroup = str(data.get("wlmResourceGroup", "") or "").strip()
+    wlmGoalType = str(data.get("wlmGoalType", "") or "").strip()
+    
+    wlmGoalValue = to_int_or_none(data.get("wlmGoalValue", ""))
+    wlmGoalImportance = to_int_or_none(data.get("wlmGoalImportance", ""))
+    
+    wlmCpuCritical = str(data.get("wlmCpuCritical", "") or "").strip()
+    wlmStorageCritical = str(data.get("wlmStorageCritical", "") or "").strip()
+    
+    tcpIpStatus = str(data.get("tcpIpStatus", "") or "").strip()
+    maxIpSockets = to_int_or_none(data.get("maxIpSockets", ""))
+    activeIpSockets = to_int_or_none(data.get("activeIpSockets", ""))
+    webGarbageCollectionInterval = to_int_or_none(data.get("webGarbageCollectionInterval", ""))
+    terminalInputTimeoutInterval = to_int_or_none(data.get("terminalInputTimeoutInterval", ""))
+    
+    try:
+        cursor.execute(sql, (
+            archivo_id, fecha,
+            mvsProductName, cicsStartup, cicsStatus, cecMachineType,
+            vtamOpenStatus, ircStatus, ircXcfGroupName, storageProtection,
+            transactionIsolation, reentrantPrograms, execStorageCommandChecking,
+            forceQuasiReentrant, programAutoinstall, terminalAutoinstall,
+            activityKeypointFrequency, logstreamDeferredForceInterval, rlsStatus,
+            rrmsMvsStatus, db2ConnectionName, cicsTsLevel, wlmMode, wlmServer,
+            wlmManageRegionGoals, wlmWorkloadName, wlmServiceClass, wlmReportClass,
+            wlmResourceGroup, wlmGoalType, wlmGoalValue, wlmGoalImportance,
+            wlmCpuCritical, wlmStorageCritical, tcpIpStatus, maxIpSockets,
+            activeIpSockets, webGarbageCollectionInterval, terminalInputTimeoutInterval
+        ))
+        
+        print(f"System Status: registro insertado correctamente")
+        return 1
+    
+    except Exception as e:
+        print(f"System Status: error al insertar - {e}")
+        return 0
