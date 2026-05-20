@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from conexionBD import *
 import re
@@ -8,6 +9,19 @@ from datetime import datetime
 
 boolPrueba = False
 cantidadRegistroPrueba = 5
+
+
+def _is_debug_storage_enabled() -> bool:
+    """
+    Activa debug del segmento Storage - Domain Subpools con variable de entorno.
+    Valores truthy soportados: 1, true, yes, on.
+    """
+    return str(os.getenv("DEBUG_STORAGE_SEGMENT", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 # define una función para convertir un valor a entero o None si no es posible
 def to_int_or_none(value):
@@ -24,6 +38,24 @@ def to_int_or_none(value):
 
     return int(s)
 
+
+def clean_segment_title(title: str) -> str:
+    """
+    Limpia títulos de segmentos CICS.
+    """
+
+    if not title:
+        return ""
+
+    s = str(title)
+
+    # remover prefijo 0 típico de CICS
+    s = re.sub(r"^\s*0", "", s)
+
+    # colapsar espacios múltiples
+    s = re.sub(r"\s+", " ", s)
+
+    return s.strip()
 
 
 # Define una función para obtener la fecha del encabezado de un archivo, buscando un patrón específico y formateando la fecha encontrada
@@ -613,10 +645,17 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "temporary storage queues",
             "files",
             "transactions",
+            "storage - domain subpools",
         }
+
+    allowed_segments = {clean_segment_title(x).lower() for x in allowed_segments}
 
     lines = file_path.read_text(errors="ignore").splitlines()
     out: dict[str, dict] = {}
+    debug_storage = _is_debug_storage_enabled()
+    storage_seen = False
+    storage_rows = 0
+    storage_key_name = ""
     i = 0
 
     while i < len(lines):
@@ -641,8 +680,9 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
                 continue
 
             # título simple
-            title = lines[j].lstrip("-").strip()
-            title_key = title.strip().lower()
+            raw_title = lines[j].lstrip("-").strip()
+            title = clean_segment_title(raw_title)
+            title_key = title.lower()
             j += 1
 
             # saltar vacíos / headers / separadores
@@ -676,6 +716,45 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             # Transactions
             elif title_key == "transactions":
                 columnas, filas, next_j = parse_table_segment(lines, j, title)
+                
+            
+            # Storage - Domain Subpools
+            elif ("storage" in title_key and "domain" in title_key and "subpool" in title_key):
+
+                columnas, filas, next_j = parse_storage_domain_subpool_segment(lines, j)
+
+                key = unique_title(title, out)
+
+                out[key] = {
+                    "nombre": title,
+                    "tipo": "tabla",
+                    "detalles": {
+                        "columnas": columnas,
+                        "filas": filas
+                    }
+                }
+
+                storage_seen = True
+                storage_rows = len(filas)
+                storage_key_name = key
+
+                if debug_storage:
+                    print(
+                        f"[DEBUG][{file_path.name}] Segmento Storage detectado -> "
+                        f"key='{key}', columnas={len(columnas)}, filas={len(filas)}"
+                    )
+
+                j = next_j
+
+                while (
+                    j < len(lines)
+                    and not reached_segment_boundary(lines[j])
+                    and not _is_totals_line(lines[j])
+                ):
+                    j += 1
+
+                i = j
+                continue
 
             # fallback
             else:
@@ -699,6 +778,18 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             continue
 
         i += 1
+
+    if debug_storage:
+        if storage_seen:
+            print(
+                f"[DEBUG][{file_path.name}] Storage - Domain Subpools presente en salida JSON "
+                f"con key='{storage_key_name}' y filas={storage_rows}"
+            )
+        else:
+            print(
+                f"[DEBUG][{file_path.name}] Storage - Domain Subpools NO fue detectado "
+                "en el parseo"
+            )
 
     return out
 
@@ -970,6 +1061,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Temporary Storage Queues")
     upsert_segmento(cursor, "Files")
     upsert_segmento(cursor, "Transactions")
+    upsert_segmento(cursor, "Storage - Domain Subpools")
     conn.commit()
 
     # =====================================================
@@ -982,94 +1074,192 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
             break
 
     prog_rows = []
+
     if isinstance(prog_payload, dict) and prog_payload.get("tipo") == "tabla":
         detalles = prog_payload.get("detalles") or {}
         prog_rows = detalles.get("filas") or []
+
     elif isinstance(prog_payload, dict) and "filas" in prog_payload:
         prog_rows = prog_payload.get("filas") or []
 
     inserted_prog = 0
+
     if isinstance(prog_rows, list) and prog_rows:
-        rows_to_insert = prog_rows[:cantidadRegistroPrueba] if boolPrueba else prog_rows
-        inserted_prog = insert_programs_rows(
-            cursor, archivo_id, fechaActual, rows_to_insert, batch_size=1000
+
+        rows_to_insert = (
+            prog_rows[:cantidadRegistroPrueba]
+            if boolPrueba
+            else prog_rows
         )
+
+        inserted_prog = insert_programs_rows(
+            cursor,
+            archivo_id,
+            fechaActual,
+            rows_to_insert,
+            batch_size=1000
+        )
+
         conn.commit()
 
     # =====================================================
     # 2) INSERTAR TEMPORARY STORAGE QUEUES
     # =====================================================
     tsq_payload = None
+
     for k, v in diccionarioSegmentos.items():
         if str(k).strip().lower() == "temporary storage queues":
             tsq_payload = v
             break
 
     tsq_rows = []
+
     if isinstance(tsq_payload, dict) and tsq_payload.get("tipo") == "tabla":
         detalles = tsq_payload.get("detalles") or {}
         tsq_rows = detalles.get("filas") or []
+
     elif isinstance(tsq_payload, dict) and "filas" in tsq_payload:
         tsq_rows = tsq_payload.get("filas") or []
 
     inserted_tsq = 0
+
     if isinstance(tsq_rows, list) and tsq_rows:
-        rows_to_insert = tsq_rows[:cantidadRegistroPrueba] if boolPrueba else tsq_rows
-        inserted_tsq = insert_temporary_storage_queues_rows(
-            cursor, archivo_id, fechaActual, rows_to_insert, batch_size=1000
+
+        rows_to_insert = (
+            tsq_rows[:cantidadRegistroPrueba]
+            if boolPrueba
+            else tsq_rows
         )
+
+        inserted_tsq = insert_temporary_storage_queues_rows(
+            cursor,
+            archivo_id,
+            fechaActual,
+            rows_to_insert,
+            batch_size=1000
+        )
+
         conn.commit()
 
     # =====================================================
     # 3) INSERTAR FILES
     # =====================================================
     files_payload = None
+
     for k, v in diccionarioSegmentos.items():
         if str(k).strip().lower() == "files":
             files_payload = v
             break
 
-
     files_rows = []
+
     if isinstance(files_payload, dict):
 
         if files_payload.get("tipo") == "tabla":
             detalles = files_payload.get("detalles") or {}
             files_rows = detalles.get("filas") or []
+
         elif "filas" in files_payload:
             files_rows = files_payload.get("filas") or []
 
-
     inserted_files = 0
+
     if isinstance(files_rows, list) and files_rows:
-        rows_to_insert = files_rows[:cantidadRegistroPrueba] if boolPrueba else files_rows
-        inserted_files = insert_files_rows(
-            cursor, archivo_id, fechaActual, rows_to_insert, batch_size=1000
+
+        rows_to_insert = (
+            files_rows[:cantidadRegistroPrueba]
+            if boolPrueba
+            else files_rows
         )
+
+        inserted_files = insert_files_rows(
+            cursor,
+            archivo_id,
+            fechaActual,
+            rows_to_insert,
+            batch_size=1000
+        )
+
         conn.commit()
 
     # =====================================================
     # 4) INSERTAR TRANSACTIONS
     # =====================================================
     tx_payload = None
+
     for k, v in diccionarioSegmentos.items():
         if str(k).strip().lower() == "transactions":
             tx_payload = v
             break
 
     tx_rows = []
+
     if isinstance(tx_payload, dict) and tx_payload.get("tipo") == "tabla":
         detalles = tx_payload.get("detalles") or {}
         tx_rows = detalles.get("filas") or []
+
     elif isinstance(tx_payload, dict) and "filas" in tx_payload:
         tx_rows = tx_payload.get("filas") or []
 
     inserted_tx = 0
+
     if isinstance(tx_rows, list) and tx_rows:
-        rows_to_insert = tx_rows[:cantidadRegistroPrueba] if boolPrueba else tx_rows
-        inserted_tx = insert_transactions_rows(
-            cursor, archivo_id, fechaActual, rows_to_insert, batch_size=1000
+
+        rows_to_insert = (
+            tx_rows[:cantidadRegistroPrueba]
+            if boolPrueba
+            else tx_rows
         )
+
+        inserted_tx = insert_transactions_rows(
+            cursor,
+            archivo_id,
+            fechaActual,
+            rows_to_insert,
+            batch_size=1000
+        )
+
+        conn.commit()
+
+    # =====================================================
+    # 5) INSERTAR STORAGE DOMAIN SUBPOOLS
+    # =====================================================
+    storage_domain_payload = None
+
+    for k, v in diccionarioSegmentos.items():
+        if str(k).strip().lower() == "storage - domain subpools":
+            storage_domain_payload = v
+            break
+
+    storage_domain_rows = []
+
+    if isinstance(storage_domain_payload, dict):
+
+        if storage_domain_payload.get("tipo") == "tabla":
+            detalles = storage_domain_payload.get("detalles") or {}
+            storage_domain_rows = detalles.get("filas") or []
+
+        elif "filas" in storage_domain_payload:
+            storage_domain_rows = storage_domain_payload.get("filas") or []
+
+    inserted_storage_domain = 0
+
+    if isinstance(storage_domain_rows, list) and storage_domain_rows:
+
+        rows_to_insert = (
+            storage_domain_rows[:cantidadRegistroPrueba]
+            if boolPrueba
+            else storage_domain_rows
+        )
+
+        inserted_storage_domain = insert_storage_domain_subpool_rows(
+            cursor,
+            archivo_id,
+            fechaActual,
+            rows_to_insert,
+            batch_size=1000
+        )
+
         conn.commit()
 
     print(
@@ -1077,12 +1267,11 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Programs insertados: {inserted_prog} | "
         f"Temporary Storage Queues insertadas: {inserted_tsq} | "
         f"Files insertados: {inserted_files} | "
-        f"Transactions insertadas: {inserted_tx}"
+        f"Transactions insertadas: {inserted_tx} | "
+        f"Storage Domain Subpools insertados: {inserted_storage_domain}"
     )
 
     conn.close()
-
-
 
 
 # Validación adicional para tabla cics_temporary_storage_queues, aunque no se inserta información en ella actualmente
@@ -1672,3 +1861,210 @@ def registrar_carpeta_procesada(fecha_carpeta: str, nombre_carpeta: str) -> None
 
     conn.commit()
     conn.close()
+    
+
+def get_storage_domain_subpool_forced_columns():
+    return [
+        "subPoolName",
+        "location",
+        "access",
+        "elementType",
+        "elementLength",
+        "initialFree",
+        "currentElements",
+        "currentElementStg",
+        "currentPageStg",
+        "percentOfDSA",
+        "peakPageStg"
+    ]
+    
+
+
+def parse_storage_domain_subpool_segment(lines, start_idx):
+
+    headers = get_storage_domain_subpool_forced_columns()
+    rows = []
+
+    i = start_idx
+
+    while i < len(lines):
+
+        line = lines[i].rstrip("\n")
+
+        # fin segmento
+        if reached_segment_boundary(line) or _is_totals_line(line):
+            break
+
+        if is_page_header(line):
+            i += 1
+            continue
+
+        if not line.strip():
+            i += 1
+            continue
+
+        low = line.lower()
+
+        # omitir headers multilinea
+        if (
+            "subpool" in low
+            or "location" in low
+            or "element" in low
+            or "page stg" in low
+            or "% of" in low
+        ):
+            i += 1
+            continue
+
+        # remover prefijo 0
+        line = re.sub(r"^\s*0\s+", "", line)
+
+        # split robusto
+        parts = re.split(r"\s{2,}", line.strip())
+
+        # mínimo esperado
+        if len(parts) < 10:
+            i += 1
+            continue
+
+        try:
+
+            while len(parts) < 11:
+                parts.append("")
+
+            row = {
+                "subPoolName": parts[0].strip(),
+                "location": parts[1].strip(),
+                "access": parts[2].strip(),
+                "elementType": parts[3].strip(),
+                "elementLength": parts[4].replace(",", "").strip(),
+                "initialFree": parts[5].strip(),
+                "currentElements": parts[6].replace(",", "").strip(),
+                "currentElementStg": parts[7].replace(",", "").strip(),
+                "currentPageStg": parts[8].replace(",", "").strip(),
+                "percentOfDSA": parts[9].replace("%", "").strip(),
+                "peakPageStg": parts[10].replace(",", "").strip()
+            }
+
+            # filtros defensivos
+            if not row["subPoolName"]:
+                i += 1
+                continue
+
+            if "subpool" in row["subPoolName"].lower():
+                i += 1
+                continue
+
+            rows.append(row)
+
+        except Exception:
+            pass
+
+        i += 1
+
+    return headers, rows, i
+
+
+def insert_storage_domain_subpool_rows(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    rows: list[dict],
+    batch_size: int = 1000
+) -> int:
+
+    sql = """
+    INSERT INTO cics_storage_domain_subpool
+    (
+        archivo,
+        fecha,
+        subPoolName,
+        location,
+        access,
+        elementType,
+        elementLength,
+        initialFree,
+        currentElements,
+        currentElementStg,
+        currentPageStg,
+        percentOfDSA,
+        peakPageStg
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    inserted = 0
+    total_rows = 0
+    skipped_empty_name = 0
+    batch = []
+
+    try:
+        cursor.fast_executemany = True
+    except Exception:
+        pass
+
+    for r in rows:
+
+        total_rows += 1
+
+        if not isinstance(r, dict):
+            continue
+
+        subPoolName = str(r.get("subPoolName", "") or "").strip()
+
+        if not subPoolName:
+            skipped_empty_name += 1
+            continue
+
+        location = str(r.get("location", "") or "").strip()
+        access = str(r.get("access", "") or "").strip()
+        elementType = str(r.get("elementType", "") or "").strip()
+
+        elementLength = to_int_or_none(r.get("elementLength", ""))
+        initialFree = str(r.get("initialFree", "") or "").strip()
+
+        currentElements = to_int_or_none(r.get("currentElements", ""))
+        currentElementStg = to_int_or_none(r.get("currentElementStg", ""))
+
+        currentPageStg = str(r.get("currentPageStg", "") or "").strip()
+
+        percentOfDSA_raw = str(r.get("percentOfDSA", "") or "").replace("%", "").strip()
+
+        try:
+            percentOfDSA = float(percentOfDSA_raw) if percentOfDSA_raw else None
+        except Exception:
+            percentOfDSA = None
+
+        peakPageStg = str(r.get("peakPageStg", "") or "").strip()
+
+        batch.append((
+            archivo_id,
+            fecha,
+            subPoolName,
+            location,
+            access,
+            elementType,
+            elementLength,
+            initialFree,
+            currentElements,
+            currentElementStg,
+            currentPageStg,
+            percentOfDSA,
+            peakPageStg
+        ))
+
+        if len(batch) >= batch_size:
+            cursor.executemany(sql, batch)
+            inserted += len(batch)
+            batch.clear()
+
+    if batch:
+        cursor.executemany(sql, batch)
+        inserted += len(batch)
+
+    print(
+        f"Storage Domain Subpools: total_rows={total_rows}, "
+        f"inserted={inserted}, skipped_empty_name={skipped_empty_name}"
+    )
+
+    return inserted
