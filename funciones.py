@@ -39,6 +39,21 @@ def to_int_or_none(value):
     return int(s)
 
 
+def to_float_or_none(value):
+    if value is None:
+        return None
+
+    s = str(value).strip().replace(",", "").replace("%", "")
+
+    if s == "":
+        return None
+
+    if not re.fullmatch(r"-?\d+(\.\d+)?", s):
+        return None
+
+    return float(s)
+
+
 def clean_segment_title(title: str) -> str:
     """
     Limpia títulos de segmentos CICS.
@@ -647,6 +662,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "transactions",
             "storage - domain subpools",
             "system status",
+            "monitoring",
         }
 
     allowed_segments = {clean_segment_title(x).lower() for x in allowed_segments}
@@ -672,9 +688,42 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             if j >= len(lines):
                 break
 
-            # si viene segmento doble, lo saltamos
+            # segmento doble (ej. Monitoring / Statistics)
             split = split_two_columns(lines[j])
             if split and is_title_text(split[0]) and is_title_text(split[1]):
+                left_title = clean_segment_title(split[0].lstrip("-").strip()).lower()
+
+                if left_title == "monitoring" and left_title in allowed_segments:
+                    title = "Monitoring"
+                    j += 1
+
+                    while j < len(lines) and (
+                        lines[j].strip() == ""
+                        or is_page_header(lines[j])
+                        or is_separator_line(lines[j])
+                        or lines[j].startswith("+_")
+                    ):
+                        j += 1
+
+                    columnas, data, next_j = parse_monitoring_segment(lines, j)
+
+                    key = unique_title(title, out)
+                    out[key] = {
+                        "nombre": title,
+                        "tipo": "informacion",
+                        "detalles": {
+                            "columnas": columnas,
+                            "datos": data
+                        }
+                    }
+
+                    j = next_j
+                    while j < len(lines) and not reached_segment_boundary(lines[j]) and not _is_totals_line(lines[j]):
+                        j += 1
+
+                    i = j
+                    continue
+
                 while j < len(lines) and not reached_segment_boundary(lines[j]):
                     j += 1
                 i = j
@@ -819,7 +868,16 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
 
 
 # Conjunto de tablas requeridas en la base de datos para almacenar los segmentos extraídos de CICSADM Lite
-_REQUIRED_TABLES = {"cics_archivos", "cics_segmento", "cics_programs", "cics_transactions", "cics_temporary_storage_queues", "cics_files", "cics_system_status"}
+_REQUIRED_TABLES = {
+    "cics_archivos",
+    "cics_segmento",
+    "cics_programs",
+    "cics_transactions",
+    "cics_temporary_storage_queues",
+    "cics_files",
+    "cics_system_status",
+    "cics_monitoring",
+}
 
 
 # Valida que existan las tablas requeridas en la base de datos, lanzando un error si alguna falta
@@ -828,7 +886,16 @@ def validar_tablas_requeridas(cursor) -> None:
         SELECT TABLE_NAME
         FROM INFORMATION_SCHEMA.TABLES
         WHERE TABLE_TYPE = 'BASE TABLE'
-          AND TABLE_NAME IN ('cics_archivos', 'cics_segmento', 'cics_programs', 'cics_transactions','cics_temporary_storage_queues','cics_files','cics_system_status')
+                    AND TABLE_NAME IN (
+                        'cics_archivos',
+                        'cics_segmento',
+                        'cics_programs',
+                        'cics_transactions',
+                        'cics_temporary_storage_queues',
+                        'cics_files',
+                        'cics_system_status',
+                        'cics_monitoring'
+                    )
     """)
     existentes = {row[0].lower() for row in cursor.fetchall()}
     faltantes = sorted(t for t in _REQUIRED_TABLES if t.lower() not in existentes)
@@ -1087,6 +1154,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Transactions")
     upsert_segmento(cursor, "Storage - Domain Subpools")
     upsert_segmento(cursor, "System Status")
+    upsert_segmento(cursor, "Monitoring")
     conn.commit()
 
     # =====================================================
@@ -1320,6 +1388,39 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
 
         conn.commit()
 
+    # =====================================================
+    # 7) INSERTAR MONITORING
+    # =====================================================
+    monitoring_payload = None
+
+    for k, v in diccionarioSegmentos.items():
+        if str(k).strip().lower() == "monitoring":
+            monitoring_payload = v
+            break
+
+    monitoring_data = {}
+
+    if isinstance(monitoring_payload, dict):
+
+        if monitoring_payload.get("tipo") == "informacion":
+            detalles = monitoring_payload.get("detalles") or {}
+            monitoring_data = detalles.get("datos") or {}
+
+        elif "datos" in monitoring_payload:
+            monitoring_data = monitoring_payload.get("datos") or {}
+
+    inserted_monitoring = 0
+
+    if isinstance(monitoring_data, dict) and monitoring_data:
+        inserted_monitoring = insert_monitoring_row(
+            cursor,
+            archivo_id,
+            fechaActual,
+            monitoring_data
+        )
+
+        conn.commit()
+
     print(
         f"Archivo: {archivo_nombre} (id={archivo_id}) | "
         f"Programs insertados: {inserted_prog} | "
@@ -1327,7 +1428,8 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Files insertados: {inserted_files} | "
         f"Transactions insertadas: {inserted_tx} | "
         f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
-        f"System Status insertado: {inserted_system_status}"
+        f"System Status insertado: {inserted_system_status} | "
+        f"Monitoring insertado: {inserted_monitoring}"
     )
 
     conn.close()
@@ -2374,4 +2476,224 @@ def insert_system_status_row(
     
     except Exception as e:
         print(f"System Status: error al insertar - {e}")
+        return 0
+
+
+def get_monitoring_forced_columns() -> list[str]:
+    return [
+        "monitoring",
+        "exceptionClass",
+        "performanceClass",
+        "resourceClass",
+        "identityClass",
+        "dataCompressionOption",
+        "applicationNaming",
+        "rmiOption",
+        "converseOption",
+        "syncpointOption",
+        "timeOption",
+        "frequency",
+        "mctProgramName",
+        "dplResourceLimit",
+        "fileResourceLimit",
+        "tsqueueResourceLimit",
+        "urimapResourceLimit",
+        "webserviceResourceLimit",
+        "exceptionClassRecords",
+        "exceptionRecordsSuppressed",
+        "performanceClassRecords",
+        "performanceRecordsSuppressed",
+        "resourceClassRecords",
+        "resourceRecordsSuppressed",
+        "identityClassRecords",
+        "identityRecordsSuppressed",
+        "monitoringSmfRecords",
+        "monitoringSmfErrors",
+        "monitoringSmfRecordsCompressed",
+        "monitoringSmfRecordsNotCompressed",
+        "percentageSmfRecordsCompressed",
+    ]
+
+
+def parse_monitoring_segment(lines: list[str], start_idx: int) -> tuple[list[str], dict, int]:
+    headers = get_monitoring_forced_columns()
+    data = {h: "" for h in headers}
+
+    field_mapping = {
+        "monitoring smf records not compressed": "monitoringSmfRecordsNotCompressed",
+        "monitoring smf records compressed": "monitoringSmfRecordsCompressed",
+        "percentage of smf records compressed": "percentageSmfRecordsCompressed",
+        "monitoring smf records": "monitoringSmfRecords",
+        "monitoring smf errors": "monitoringSmfErrors",
+        "exception records suppressed": "exceptionRecordsSuppressed",
+        "exception class records": "exceptionClassRecords",
+        "performance records suppressed": "performanceRecordsSuppressed",
+        "performance class records": "performanceClassRecords",
+        "resource records suppressed": "resourceRecordsSuppressed",
+        "resource class records": "resourceClassRecords",
+        "identity records suppressed": "identityRecordsSuppressed",
+        "identity class records": "identityClassRecords",
+        "data compression option": "dataCompressionOption",
+        "application naming": "applicationNaming",
+        "converse option": "converseOption",
+        "syncpoint option": "syncpointOption",
+        "mct program name": "mctProgramName",
+        "dpl resource limit": "dplResourceLimit",
+        "file resource limit": "fileResourceLimit",
+        "tsqueue resource limit": "tsqueueResourceLimit",
+        "urimap resource limit": "urimapResourceLimit",
+        "webservice resource limit": "webserviceResourceLimit",
+        "exception class": "exceptionClass",
+        "performance class": "performanceClass",
+        "resource class": "resourceClass",
+        "identity class": "identityClass",
+        "rmi option": "rmiOption",
+        "time option": "timeOption",
+        "frequency": "frequency",
+        "monitoring": "monitoring",
+    }
+
+    i = start_idx
+    while i < len(lines):
+        line = lines[i]
+
+        if line.strip().startswith("0----") or line.strip().startswith("+_"):
+            break
+
+        if not line.strip() or line.strip().startswith("Applid"):
+            i += 1
+            continue
+
+        line_clean = re.sub(r"^\s*0\s+", "", line)
+        split_result = split_two_columns(line_clean)
+        columns = [split_result[0], split_result[1]] if split_result else [line_clean]
+
+        for col_text in columns:
+            if not col_text or not col_text.strip():
+                continue
+
+            matches = re.findall(r"([^:]+?):\s+([^:]+?)(?=$|\s{3,})", col_text)
+
+            for label_raw, value_raw in matches:
+                label = re.sub(r"\.+", " ", label_raw).strip().lower()
+                label = re.sub(r"\s+", " ", label)
+                value = value_raw.strip()
+
+                if not label or value == "":
+                    continue
+
+                for pattern_key, column_name in field_mapping.items():
+                    if pattern_key in label:
+                        if data[column_name] == "":
+                            data[column_name] = value
+                        break
+
+        i += 1
+
+    return headers, data, i
+
+
+def insert_monitoring_row(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    data: dict
+) -> int:
+    sql = """
+    INSERT INTO cics_monitoring
+    (
+        archivo, fecha, monitoring, exceptionClass, performanceClass,
+        resourceClass, identityClass, dataCompressionOption, applicationNaming,
+        rmiOption, converseOption, syncpointOption, timeOption, frequency,
+        mctProgramName, dplResourceLimit, fileResourceLimit, tsqueueResourceLimit,
+        urimapResourceLimit, webserviceResourceLimit, exceptionClassRecords,
+        exceptionRecordsSuppressed, performanceClassRecords, performanceRecordsSuppressed,
+        resourceClassRecords, resourceRecordsSuppressed, identityClassRecords,
+        identityRecordsSuppressed, monitoringSmfRecords, monitoringSmfErrors,
+        monitoringSmfRecordsCompressed, monitoringSmfRecordsNotCompressed,
+        percentageSmfRecordsCompressed
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    if not isinstance(data, dict):
+        print("Monitoring: data no es diccionario, se omite")
+        return 0
+
+    monitoring = str(data.get("monitoring", "") or "").strip()
+    exceptionClass = str(data.get("exceptionClass", "") or "").strip()
+    performanceClass = str(data.get("performanceClass", "") or "").strip()
+    resourceClass = str(data.get("resourceClass", "") or "").strip()
+    identityClass = str(data.get("identityClass", "") or "").strip()
+    dataCompressionOption = str(data.get("dataCompressionOption", "") or "").strip()
+    applicationNaming = str(data.get("applicationNaming", "") or "").strip()
+    rmiOption = str(data.get("rmiOption", "") or "").strip()
+    converseOption = str(data.get("converseOption", "") or "").strip()
+    syncpointOption = str(data.get("syncpointOption", "") or "").strip()
+    timeOption = str(data.get("timeOption", "") or "").strip()
+    frequency = str(data.get("frequency", "") or "").strip()
+    mctProgramName = str(data.get("mctProgramName", "") or "").strip()
+
+    dplResourceLimit = to_int_or_none(data.get("dplResourceLimit", ""))
+    fileResourceLimit = to_int_or_none(data.get("fileResourceLimit", ""))
+    tsqueueResourceLimit = to_int_or_none(data.get("tsqueueResourceLimit", ""))
+    urimapResourceLimit = to_int_or_none(data.get("urimapResourceLimit", ""))
+    webserviceResourceLimit = to_int_or_none(data.get("webserviceResourceLimit", ""))
+
+    exceptionClassRecords = to_int_or_none(data.get("exceptionClassRecords", ""))
+    exceptionRecordsSuppressed = to_int_or_none(data.get("exceptionRecordsSuppressed", ""))
+    performanceClassRecords = to_int_or_none(data.get("performanceClassRecords", ""))
+    performanceRecordsSuppressed = to_int_or_none(data.get("performanceRecordsSuppressed", ""))
+    resourceClassRecords = to_int_or_none(data.get("resourceClassRecords", ""))
+    resourceRecordsSuppressed = to_int_or_none(data.get("resourceRecordsSuppressed", ""))
+    identityClassRecords = to_int_or_none(data.get("identityClassRecords", ""))
+    identityRecordsSuppressed = to_int_or_none(data.get("identityRecordsSuppressed", ""))
+    monitoringSmfRecords = to_int_or_none(data.get("monitoringSmfRecords", ""))
+    monitoringSmfErrors = to_int_or_none(data.get("monitoringSmfErrors", ""))
+    monitoringSmfRecordsCompressed = to_int_or_none(data.get("monitoringSmfRecordsCompressed", ""))
+    monitoringSmfRecordsNotCompressed = to_int_or_none(data.get("monitoringSmfRecordsNotCompressed", ""))
+    percentageSmfRecordsCompressed = to_float_or_none(data.get("percentageSmfRecordsCompressed", ""))
+
+    try:
+        cursor.execute(sql, (
+            archivo_id,
+            fecha,
+            monitoring,
+            exceptionClass,
+            performanceClass,
+            resourceClass,
+            identityClass,
+            dataCompressionOption,
+            applicationNaming,
+            rmiOption,
+            converseOption,
+            syncpointOption,
+            timeOption,
+            frequency,
+            mctProgramName,
+            dplResourceLimit,
+            fileResourceLimit,
+            tsqueueResourceLimit,
+            urimapResourceLimit,
+            webserviceResourceLimit,
+            exceptionClassRecords,
+            exceptionRecordsSuppressed,
+            performanceClassRecords,
+            performanceRecordsSuppressed,
+            resourceClassRecords,
+            resourceRecordsSuppressed,
+            identityClassRecords,
+            identityRecordsSuppressed,
+            monitoringSmfRecords,
+            monitoringSmfErrors,
+            monitoringSmfRecordsCompressed,
+            monitoringSmfRecordsNotCompressed,
+            percentageSmfRecordsCompressed,
+        ))
+
+        print("Monitoring: registro insertado correctamente")
+        return 1
+
+    except Exception as e:
+        print(f"Monitoring: error al insertar - {e}")
         return 0

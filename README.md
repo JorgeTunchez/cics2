@@ -1,159 +1,145 @@
-📊 CICS Analyzer – Procesamiento de Reportes
+# CICS Analyzer - Procesamiento de Reportes
 
-Este proyecto procesa archivos .TXT generados por CICS, los convierte a formato JSON y posteriormente los inserta en base de datos SQL Server para análisis.
+Este proyecto procesa reportes CICS en formato TXT, genera JSON estructurado por segmento y carga la informacion en SQL Server.
 
-🚀 Flujo General
-Se leen archivos .TXT desde el directorio ENTRADA
-Se transforman a JSON
-Se almacenan en SALIDA
-Se insertan en base de datos
-Se registra la carpeta como procesada
-📁 Estructura del Proyecto
-DEPCICS2/
-├── ENTRADA/
-│   ├── 2025-09-12/
-│   │   ├── CICSADM.TXT
-│   │   ├── CICSAORP.TXT
-│   │   ├── CICSFILE.TXT
-│   │   ├── CICSMANT.TXT
-│   │   ├── CICSPEP.TXT
-│   │   └── CICSVAR.TXT
-│   └── 2025-09-11/
-│       └── ...
-│
-├── SALIDA/
-│   ├── 2025-09-12/
-│   │   ├── CICSADM.JSON
-│   │   └── ...
-│
-├── funciones.py
-├── main.py
-├── conexionBD.py
-├── scriptBD.sql
-└── README.md
-⚠️ REGLAS IMPORTANTES
-📌 1. Estructura obligatoria
+## Requisitos
 
-Todos los archivos deben estar dentro de carpetas con formato:
+- Python 3.8+
+- pyodbc instalado
+- SQL Server accesible desde la maquina donde se ejecuta el proceso
 
-YYYY-MM-DD
-Cada carpeta debe contener exactamente 6 archivos TXT
-📌 2. Validación de fecha
-La fecha se obtiene desde el encabezado de los archivos
-Todos los archivos dentro de la carpeta deben tener la misma fecha
-La fecha del encabezado debe coincidir con el nombre de la carpeta
+Instalacion rapida:
 
-Ejemplo:
+```bash
+pip install pyodbc
+```
 
-Carpeta: 2026-04-20
-Encabezado: Date 04/20/2026
-📌 3. Procesamiento automático
+## Estructura del proyecto
 
-El sistema:
+```text
+depCics2/
+|-- ENTRADA/
+|   |-- 2026-04-22/
+|   |   |-- CICSADM.TXT
+|   |   |-- CICSAORP.TXT
+|   |   |-- CICSFILE.TXT
+|   |   |-- CICSMANT.TXT
+|   |   |-- CICSPEP.TXT
+|   |   `-- CICSVAR.TXT
+|-- SALIDA/
+|   `-- YYYY-MM-DD/
+|       `-- *.JSON
+|-- conexionBD.py
+|-- funciones.py
+|-- main.py
+|-- scriptBD.sql
+`-- README.md
+```
 
-Detecta la carpeta más reciente
-Procesa desde la más reciente hacia atrás
-Omite carpetas ya procesadas
-📌 4. Control de cargas
+## Flujo del proceso
 
-Se utiliza la tabla:
+Por cada carpeta de fecha en ENTRADA:
 
-cics_cargas
+1. Valida formato de carpeta YYYY-MM-DD.
+2. Valida que existan exactamente 6 archivos TXT.
+3. Lee fecha desde encabezados y valida fecha unica.
+4. Verifica que la fecha del encabezado coincida con el nombre de carpeta.
+5. Omite la carpeta si ya fue registrada en cics_cargas.
+6. Genera JSON por cada TXT en SALIDA/<fecha>/.
+7. Inserta datos en SQL Server.
+8. Registra la carpeta como procesada en cics_cargas.
 
-Para evitar reprocesar información ya cargada.
+## Segmentos soportados
 
-🧠 Lógica del Proceso
+- Programs
+- Temporary Storage Queues
+- Files
+- Transactions
+- Storage - Domain Subpools
+- System Status
+- Monitoring
 
-Por cada carpeta:
+Nota sobre Monitoring:
 
-Validar cantidad de archivos
-Validar fecha única
-Verificar si ya fue procesada
-Generar JSON
-Insertar en BD
-Registrar carga
-🗃️ Tablas principales
-🔹 cics_programs
-Contiene información de programas
-Campos numéricos convertidos a INT
-🔹 cics_transactions
-Contiene transacciones
-Métricas como attachCount, abendCount en INT
-🔹 cics_temporary_storage_queues
-Información de colas temporales
-Longitudes y cantidades en INT
-🔹 cics_files
-Información de archivos CICS
-Campos numéricos:
-strings
-buffersIndex
-buffersData
-🔢 Conversión de datos
+- Monitoring viene en bloque doble junto con Statistics.
+- El parser extrae Monitoring y omite Statistics.
 
-Los siguientes campos se convierten a INT:
+## Tablas principales de salida
 
-Programs:
-timesUsed
-timesFetched
-libraryOffset
-timesNewCopy
-timesRemoved
-programSize
-Transactions:
-attachCount
-restartCount
-dynamicLocal
-remoteStarts
-storageViols
-abendCount
-Temporary Storage Queues:
-numberOfItems
-minItemLength
-maxItemLength
-tsqueueFlength
-Files:
-strings
-buffersIndex
-buffersData
-🧹 Limpieza de datos
-Se eliminan comas en números (1,344 → 1344)
-Valores inválidos se convierten a NULL
-Se evitan encabezados en inserciones
-⚙️ Ejecución
+- cics_archivos
+- cics_segmento
+- cics_programs
+- cics_transactions
+- cics_temporary_storage_queues
+- cics_files
+- cics_system_status
+- cics_monitoring
+- cics_cargas
+
+## Ejecucion
+
+```bash
 python main.py
-🛠️ Recomendaciones
-No mezclar archivos de diferentes fechas en una carpeta
-Verificar que todos los archivos estén completos
-Evitar modificar manualmente los JSON generados
-Revisar logs en consola para detectar errores
-📊 Ejemplo de consulta
-SELECT TOP 10
-    fileName,
-    SUM(buffersData) AS total_buffers
-FROM cics_files
-GROUP BY fileName
-ORDER BY total_buffers DESC;
-🧾 Logs del sistema
+```
 
-El sistema muestra:
+## Salidas esperadas en consola
 
-Archivos procesados
-JSON generados
-Registros insertados
-Errores detectados
-📌 Estado del Proyecto
+- Archivo en analisis
+- Segmentos detectados por archivo
+- JSON generado
+- Resumen de inserciones por tabla
+- Errores de validacion o de BD
 
-✔ Procesamiento por carpetas
-✔ Control de duplicados
-✔ Conversión a tipos numéricos
-✔ Parsing robusto por tokens
-✔ Evita encabezados en BD
+## Validaciones y control de reproceso
 
-🚀 Próximos pasos (opcional)
-Dashboard de métricas
-Optimización con paralelismo
-Alertas de inconsistencias
-Automatización programada (Job)
-👨‍💻 Autor
+El proceso puede no cargar una carpeta por dos razones:
 
-Proyecto desarrollado para análisis de reportes CICS.
+1. La carpeta ya esta registrada en cics_cargas.
+2. Ya existen registros en tablas principales para esa fecha.
+
+Si necesitas reprocesar una fecha, primero debes limpiar el control y/o las tablas objetivo para esa fecha.
+
+## Estructura JSON
+
+Cada segmento se guarda como objeto con esta forma:
+
+```json
+{
+    "System Status": {
+        "nombre": "System Status",
+        "tipo": "informacion",
+        "detalles": {
+            "columnas": ["campo1", "campo2"],
+            "datos": {
+                "campo1": "valor",
+                "campo2": "valor"
+            }
+        }
+    },
+    "Programs": {
+        "nombre": "Programs",
+        "tipo": "tabla",
+        "detalles": {
+            "columnas": ["col1", "col2"],
+            "filas": [
+                {"col1": "v1", "col2": "v2"}
+            ]
+        }
+    }
+}
+```
+
+## Troubleshooting rapido
+
+- No inserta una tabla:
+    - Verifica conectividad SQL Server en conexionBD.py.
+    - Verifica que exista la tabla en BD.
+    - Revisa el resumen de inserciones en consola.
+
+- No aparece un segmento en JSON:
+    - Valida que el segmento exista en el TXT de entrada.
+    - Revisa que el parser lo tenga habilitado en funciones.py.
+
+- Carpeta omitida:
+    - Revisa cics_cargas para la fecha/carpeta.
+    - Revisa si hay datos previos para esa fecha.
