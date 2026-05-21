@@ -1,4 +1,43 @@
 /* =========================================
+   LIMPIEZA EN ORDEN DE DEPENDENCIAS
+   ========================================= */
+IF OBJECT_ID('dbo.cics_statistics', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_statistics;
+GO
+
+IF OBJECT_ID('dbo.cics_monitoring', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_monitoring;
+GO
+
+IF OBJECT_ID('dbo.cics_system_status', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_system_status;
+GO
+
+IF OBJECT_ID('dbo.cics_storage_domain_subpool', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_storage_domain_subpool;
+GO
+
+IF OBJECT_ID('dbo.cics_files', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_files;
+GO
+
+IF OBJECT_ID('dbo.cics_temporary_storage_queues', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_temporary_storage_queues;
+GO
+
+IF OBJECT_ID('dbo.cics_transactions', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_transactions;
+GO
+
+IF OBJECT_ID('dbo.cics_programs', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_programs;
+GO
+
+IF OBJECT_ID('dbo.cics_cargas', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_cargas;
+GO
+
+/* =========================================
    TABLA: archivos
    ========================================= */
 IF OBJECT_ID('dbo.cics_archivos', 'U') IS NOT NULL
@@ -13,7 +52,7 @@ CREATE TABLE dbo.cics_archivos
 GO
 
 CREATE UNIQUE INDEX UX_archivos_archivo
-ON dbo.archivos(archivo);
+ON dbo.cics_archivos(archivo);
 GO
 
 
@@ -21,7 +60,7 @@ GO
    TABLA: segmento
    ========================================= */
 IF OBJECT_ID('dbo.cics_segmento', 'U') IS NOT NULL
-    DROP TABLE dbo.segmento;
+    DROP TABLE dbo.cics_segmento;
 GO
 
 CREATE TABLE dbo.cics_segmento
@@ -218,6 +257,174 @@ ADD CONSTRAINT FK_cics_files_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 
+
+/* =========================================
+   TABLA: cics_storage_domain_subpool
+   ========================================= */
+IF OBJECT_ID('dbo.cics_storage_domain_subpool', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_storage_domain_subpool;
+GO
+
+CREATE TABLE dbo.cics_storage_domain_subpool
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    subPoolName NVARCHAR(100) NOT NULL,
+    location NVARCHAR(50) NULL,
+    access NVARCHAR(50) NULL,
+    elementType NVARCHAR(50) NULL,
+    elementLength INT NULL,
+    initialFree NVARCHAR(30) NULL,
+    currentElements INT NULL,
+    currentElementStg INT NULL,
+    currentPageStg NVARCHAR(30) NULL,
+    percentOfDSA DECIMAL(10,2) NULL,
+    peakPageStg NVARCHAR(30) NULL
+);
+GO
+
+CREATE INDEX IX_cics_storage_domain_subpool_archivo_fecha
+ON dbo.cics_storage_domain_subpool(archivo, fecha);
+GO
+
+CREATE INDEX IX_cics_storage_domain_subpool_subPoolName
+ON dbo.cics_storage_domain_subpool(subPoolName);
+GO
+
+CREATE UNIQUE INDEX UX_cics_storage_domain_subpool_archivo_fecha_subPoolName
+ON dbo.cics_storage_domain_subpool(archivo, fecha, subPoolName, location, access);
+GO
+
+ALTER TABLE dbo.cics_storage_domain_subpool
+ADD CONSTRAINT FK_cics_storage_domain_subpool_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+/* =========================================
+   TABLA: cics_system_status
+   Un registro por archivo y fecha
+   ========================================= */
+IF OBJECT_ID('dbo.cics_system_status', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_system_status;
+GO
+
+CREATE TABLE dbo.cics_system_status
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    mvsProductName NVARCHAR(100) NULL,
+    cicsStartup NVARCHAR(30) NULL,
+    cicsStatus NVARCHAR(30) NULL,
+    cecMachineType NVARCHAR(50) NULL,
+    vtamOpenStatus NVARCHAR(30) NULL,
+    ircStatus NVARCHAR(30) NULL,
+    ircXcfGroupName NVARCHAR(100) NULL,
+    storageProtection NVARCHAR(30) NULL,
+    transactionIsolation NVARCHAR(30) NULL,
+    reentrantPrograms NVARCHAR(50) NULL,
+    execStorageCommandChecking NVARCHAR(30) NULL,
+    forceQuasiReentrant NVARCHAR(30) NULL,
+    programAutoinstall NVARCHAR(30) NULL,
+    terminalAutoinstall NVARCHAR(30) NULL,
+    activityKeypointFrequency INT NULL,
+    logstreamDeferredForceInterval INT NULL,
+    rlsStatus NVARCHAR(50) NULL,
+    rrmsMvsStatus NVARCHAR(50) NULL,
+    db2ConnectionName NVARCHAR(100) NULL,
+    cicsTsLevel NVARCHAR(30) NULL,
+    wlmMode NVARCHAR(30) NULL,
+    wlmServer NVARCHAR(30) NULL,
+    wlmManageRegionGoals NVARCHAR(100) NULL,
+    wlmWorkloadName NVARCHAR(100) NULL,
+    wlmServiceClass NVARCHAR(100) NULL,
+    wlmReportClass NVARCHAR(100) NULL,
+    wlmResourceGroup NVARCHAR(100) NULL,
+    wlmGoalType NVARCHAR(50) NULL,
+    wlmGoalValue INT NULL,
+    wlmGoalImportance INT NULL,
+    wlmCpuCritical NVARCHAR(20) NULL,
+    wlmStorageCritical NVARCHAR(20) NULL,
+    tcpIpStatus NVARCHAR(30) NULL,
+    maxIpSockets INT NULL,
+    activeIpSockets INT NULL,
+    webGarbageCollectionInterval INT NULL,
+    terminalInputTimeoutInterval INT NULL,
+
+    CONSTRAINT UX_cics_system_status_archivo_fecha UNIQUE (archivo, fecha)
+);
+GO
+
+CREATE INDEX IX_cics_system_status_archivo_fecha
+ON dbo.cics_system_status(archivo, fecha);
+GO
+
+ALTER TABLE dbo.cics_system_status
+ADD CONSTRAINT FK_cics_system_status_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+/* =========================================
+   TABLA: cics_monitoring
+   Un registro por archivo y fecha
+   ========================================= */
+IF OBJECT_ID('dbo.cics_monitoring', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_monitoring;
+GO
+
+CREATE TABLE dbo.cics_monitoring
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    monitoring NVARCHAR(20) NULL,
+    exceptionClass NVARCHAR(20) NULL,
+    performanceClass NVARCHAR(20) NULL,
+    resourceClass NVARCHAR(20) NULL,
+    identityClass NVARCHAR(20) NULL,
+    dataCompressionOption NVARCHAR(20) NULL,
+    applicationNaming NVARCHAR(20) NULL,
+    rmiOption NVARCHAR(20) NULL,
+    converseOption NVARCHAR(20) NULL,
+    syncpointOption NVARCHAR(20) NULL,
+    timeOption NVARCHAR(20) NULL,
+    frequency NVARCHAR(30) NULL,
+    mctProgramName NVARCHAR(100) NULL,
+    dplResourceLimit INT NULL,
+    fileResourceLimit INT NULL,
+    tsqueueResourceLimit INT NULL,
+    urimapResourceLimit INT NULL,
+    webserviceResourceLimit INT NULL,
+    exceptionClassRecords BIGINT NULL,
+    exceptionRecordsSuppressed BIGINT NULL,
+    performanceClassRecords BIGINT NULL,
+    performanceRecordsSuppressed BIGINT NULL,
+    resourceClassRecords BIGINT NULL,
+    resourceRecordsSuppressed BIGINT NULL,
+    identityClassRecords BIGINT NULL,
+    identityRecordsSuppressed BIGINT NULL,
+    monitoringSmfRecords BIGINT NULL,
+    monitoringSmfErrors BIGINT NULL,
+    monitoringSmfRecordsCompressed BIGINT NULL,
+    monitoringSmfRecordsNotCompressed BIGINT NULL,
+    percentageSmfRecordsCompressed DECIMAL(5,2) NULL,
+
+    CONSTRAINT UX_cics_monitoring_archivo_fecha UNIQUE (archivo, fecha)
+);
+GO
+
+CREATE INDEX IX_cics_monitoring_archivo_fecha
+ON dbo.cics_monitoring(archivo, fecha);
+GO
+
+ALTER TABLE dbo.cics_monitoring
+ADD CONSTRAINT FK_cics_monitoring_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
 CREATE TABLE dbo.cics_cargas
 (
     id INT IDENTITY(1,1) PRIMARY KEY,
@@ -230,4 +437,59 @@ GO
 
 CREATE UNIQUE INDEX UX_cics_cargas_fecha_carpeta
 ON dbo.cics_cargas(fecha, carpeta);
+GO
+
+
+/* =========================================
+   TABLA: cics_statistics
+   Un registro por archivo y fecha
+   ========================================= */
+IF OBJECT_ID('dbo.cics_statistics', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_statistics;
+GO
+
+CREATE TABLE dbo.cics_statistics
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+
+    statisticsRecording NVARCHAR(20) NULL,
+    statisticsLastResetDateTime DATETIME NULL,
+    elapsedTimeSinceReset NVARCHAR(30) NULL,
+    statisticsInterval NVARCHAR(30) NULL,
+    nextStatisticsCollection NVARCHAR(30) NULL,
+    statisticsEndOfDayTime NVARCHAR(30) NULL,
+    statisticsStartDateTime DATETIME NULL,
+    statisticsSmfRecords BIGINT NULL,
+    statisticsSmfWritesSuppressed BIGINT NULL,
+    statisticsSmfErrors BIGINT NULL,
+    currentTasksAtLastAttach INT NULL,
+    mxtValueAtLastAttach INT NULL,
+    timeLastUserTransactionAttached DATETIME NULL,
+    timeLastUserTransactionEnded DATETIME NULL,
+    systemTransactionsEnded BIGINT NULL,
+    userTransactionsEnded BIGINT NULL,
+    totalTransactionsEnded BIGINT NULL,
+    averageUserTransactionRespTime NVARCHAR(30) NULL,
+    peakUserTransactionRespTime NVARCHAR(30) NULL,
+    peakUserTransactionRespTimeAt DATETIME NULL,
+    totalTransactionCpuTime NVARCHAR(30) NULL,
+    totalTransactionCpuTimeOnCp NVARCHAR(30) NULL,
+    totalTransactionCpuOffloadOnCp NVARCHAR(30) NULL,
+    averageCompressedRecordLength INT NULL,
+    averageUncompressedRecordLength INT NULL,
+    averageRecordCompressionPercent DECIMAL(5,2) NULL,
+
+    CONSTRAINT UX_cics_statistics_archivo_fecha UNIQUE (archivo, fecha)
+);
+GO
+
+CREATE INDEX IX_cics_statistics_archivo_fecha
+ON dbo.cics_statistics(archivo, fecha);
+GO
+
+ALTER TABLE dbo.cics_statistics
+ADD CONSTRAINT FK_cics_statistics_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO

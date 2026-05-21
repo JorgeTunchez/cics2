@@ -54,6 +54,62 @@ def to_float_or_none(value):
     return float(s)
 
 
+def to_datetime_or_none(value):
+    if value is None:
+        return None
+
+    s = re.sub(r"\s+", " ", str(value).strip())
+    if s == "":
+        return None
+
+    for fmt in ("%m/%d/%Y %H:%M:%S.%f", "%m/%d/%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+def to_time_or_none(value):
+    if value is None:
+        return None
+
+    s = str(value).strip()
+    if s == "":
+        return None
+
+    for fmt in ("%H:%M:%S.%f", "%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).time()
+        except ValueError:
+            continue
+
+    return None
+
+
+def to_sqlserver_datetime_string(value):
+    parsed = to_datetime_or_none(value)
+    if parsed is None:
+        return None
+    return parsed.strftime("%m/%d/%Y %H:%M:%S.%f")[:-3]
+
+
+def to_sqlserver_time_string(value):
+    parsed = to_time_or_none(value)
+    if parsed is None:
+        return None
+    return parsed.strftime("%H:%M:%S.%f")[:-2]
+
+
+def to_nonempty_string_or_none(value):
+    if value is None:
+        return None
+
+    s = str(value).strip()
+    return s if s else None
+
+
 def clean_segment_title(title: str) -> str:
     """
     Limpia títulos de segmentos CICS.
@@ -663,6 +719,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "storage - domain subpools",
             "system status",
             "monitoring",
+            "statistics",
         }
 
     allowed_segments = {clean_segment_title(x).lower() for x in allowed_segments}
@@ -692,9 +749,9 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             split = split_two_columns(lines[j])
             if split and is_title_text(split[0]) and is_title_text(split[1]):
                 left_title = clean_segment_title(split[0].lstrip("-").strip()).lower()
+                right_title = clean_segment_title(split[1].lstrip("-").strip()).lower()
 
-                if left_title == "monitoring" and left_title in allowed_segments:
-                    title = "Monitoring"
+                if left_title == "monitoring" and right_title == "statistics":
                     j += 1
 
                     while j < len(lines) and (
@@ -705,17 +762,39 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
                     ):
                         j += 1
 
-                    columnas, data, next_j = parse_monitoring_segment(lines, j)
+                    next_j = j
 
-                    key = unique_title(title, out)
-                    out[key] = {
-                        "nombre": title,
-                        "tipo": "informacion",
-                        "detalles": {
-                            "columnas": columnas,
-                            "datos": data
+                    if "monitoring" in allowed_segments:
+                        title = "Monitoring"
+                        columnas, data, monitoring_next_j = parse_monitoring_segment(lines, j)
+
+                        key = unique_title(title, out)
+                        out[key] = {
+                            "nombre": title,
+                            "tipo": "informacion",
+                            "detalles": {
+                                "columnas": columnas,
+                                "datos": data
+                            }
                         }
-                    }
+
+                        next_j = max(next_j, monitoring_next_j)
+
+                    if "statistics" in allowed_segments:
+                        title = "Statistics"
+                        columnas, data, statistics_next_j = parse_statistics_segment(lines, j)
+
+                        key = unique_title(title, out)
+                        out[key] = {
+                            "nombre": title,
+                            "tipo": "informacion",
+                            "detalles": {
+                                "columnas": columnas,
+                                "datos": data
+                            }
+                        }
+
+                        next_j = max(next_j, statistics_next_j)
 
                     j = next_j
                     while j < len(lines) and not reached_segment_boundary(lines[j]) and not _is_totals_line(lines[j]):
@@ -877,6 +956,7 @@ _REQUIRED_TABLES = {
     "cics_files",
     "cics_system_status",
     "cics_monitoring",
+    "cics_statistics",
 }
 
 
@@ -894,7 +974,8 @@ def validar_tablas_requeridas(cursor) -> None:
                         'cics_temporary_storage_queues',
                         'cics_files',
                         'cics_system_status',
-                        'cics_monitoring'
+                        'cics_monitoring',
+                        'cics_statistics'
                     )
     """)
     existentes = {row[0].lower() for row in cursor.fetchall()}
@@ -931,6 +1012,62 @@ def upsert_segmento(cursor, segmento_nombre: str) -> int:
     if not row or row[0] is None:
         raise RuntimeError(f"No se pudo obtener id para segmento='{segmento_nombre}'")
     return int(row[0])
+
+
+def extraer_datos_segmento_informacion(diccionario_segmentos: dict, nombre_segmento: str) -> dict:
+    payload = None
+
+    for key, value in diccionario_segmentos.items():
+        if str(key).strip().lower() == nombre_segmento.strip().lower():
+            payload = value
+            break
+
+    if not isinstance(payload, dict):
+        return {}
+
+    if payload.get("tipo") == "informacion":
+        detalles = payload.get("detalles") or {}
+        datos = detalles.get("datos") or {}
+        return datos if isinstance(datos, dict) else {}
+
+    if "datos" in payload:
+        datos = payload.get("datos") or {}
+        return datos if isinstance(datos, dict) else {}
+
+    return {}
+
+
+def existe_statistics(cursor, archivo_id: int, fecha: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM cics_statistics WHERE archivo = ? AND fecha = ?",
+        (archivo_id, fecha),
+    )
+    return cursor.fetchone() is not None
+
+
+def insertar_statistics_si_falta(fecha_actual: str, nombre_archivo: str, diccionario_segmentos: dict) -> int:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    try:
+        validar_tablas_requeridas(cursor)
+
+        archivo_nombre = nombre_archivo.replace(".TXT", "").replace(".JSON", "").strip().upper()
+        archivo_id = upsert_archivo(cursor, archivo_nombre)
+        statistics_data = extraer_datos_segmento_informacion(diccionario_segmentos, "Statistics")
+
+        if not statistics_data:
+            return 0
+
+        if existe_statistics(cursor, archivo_id, fecha_actual):
+            return 0
+
+        inserted = insert_statistics_row(cursor, archivo_id, fecha_actual, statistics_data)
+        conn.commit()
+        return inserted
+
+    finally:
+        conn.close()
 
 
 # Inserta filas del segmento Programs en cics_programs usando executemany por lotes
@@ -1155,6 +1292,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Storage - Domain Subpools")
     upsert_segmento(cursor, "System Status")
     upsert_segmento(cursor, "Monitoring")
+    upsert_segmento(cursor, "Statistics")
     conn.commit()
 
     # =====================================================
@@ -1391,23 +1529,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     # =====================================================
     # 7) INSERTAR MONITORING
     # =====================================================
-    monitoring_payload = None
-
-    for k, v in diccionarioSegmentos.items():
-        if str(k).strip().lower() == "monitoring":
-            monitoring_payload = v
-            break
-
-    monitoring_data = {}
-
-    if isinstance(monitoring_payload, dict):
-
-        if monitoring_payload.get("tipo") == "informacion":
-            detalles = monitoring_payload.get("detalles") or {}
-            monitoring_data = detalles.get("datos") or {}
-
-        elif "datos" in monitoring_payload:
-            monitoring_data = monitoring_payload.get("datos") or {}
+    monitoring_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Monitoring")
 
     inserted_monitoring = 0
 
@@ -1421,6 +1543,23 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
 
         conn.commit()
 
+    # =====================================================
+    # 8) INSERTAR STATISTICS
+    # =====================================================
+    statistics_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Statistics")
+
+    inserted_statistics = 0
+
+    if isinstance(statistics_data, dict) and statistics_data:
+        inserted_statistics = insert_statistics_row(
+            cursor,
+            archivo_id,
+            fechaActual,
+            statistics_data
+        )
+
+        conn.commit()
+
     print(
         f"Archivo: {archivo_nombre} (id={archivo_id}) | "
         f"Programs insertados: {inserted_prog} | "
@@ -1429,7 +1568,8 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Transactions insertadas: {inserted_tx} | "
         f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
         f"System Status insertado: {inserted_system_status} | "
-        f"Monitoring insertado: {inserted_monitoring}"
+        f"Monitoring insertado: {inserted_monitoring} | "
+        f"Statistics insertado: {inserted_statistics}"
     )
 
     conn.close()
@@ -2572,21 +2712,22 @@ def parse_monitoring_segment(lines: list[str], start_idx: int) -> tuple[list[str
             if not col_text or not col_text.strip():
                 continue
 
-            matches = re.findall(r"([^:]+?):\s+([^:]+?)(?=$|\s{3,})", col_text)
+            if ":" not in col_text:
+                continue
 
-            for label_raw, value_raw in matches:
-                label = re.sub(r"\.+", " ", label_raw).strip().lower()
-                label = re.sub(r"\s+", " ", label)
-                value = value_raw.strip()
+            label_raw, value_raw = col_text.split(":", 1)
+            label = re.sub(r"\.+", " ", label_raw).strip().lower()
+            label = re.sub(r"\s+", " ", label)
+            value = value_raw.strip()
 
-                if not label or value == "":
-                    continue
+            if not label or value == "":
+                continue
 
-                for pattern_key, column_name in field_mapping.items():
-                    if pattern_key in label:
-                        if data[column_name] == "":
-                            data[column_name] = value
-                        break
+            for pattern_key, column_name in field_mapping.items():
+                if pattern_key in label:
+                    if data[column_name] == "":
+                        data[column_name] = value
+                    break
 
         i += 1
 
@@ -2696,4 +2837,226 @@ def insert_monitoring_row(
 
     except Exception as e:
         print(f"Monitoring: error al insertar - {e}")
+        return 0
+
+
+def get_statistics_forced_columns() -> list[str]:
+    return [
+        "statisticsRecording",
+        "statisticsLastResetDateTime",
+        "elapsedTimeSinceReset",
+        "statisticsInterval",
+        "nextStatisticsCollection",
+        "statisticsEndOfDayTime",
+        "statisticsStartDateTime",
+        "statisticsSmfRecords",
+        "statisticsSmfWritesSuppressed",
+        "statisticsSmfErrors",
+        "currentTasksAtLastAttach",
+        "mxtValueAtLastAttach",
+        "timeLastUserTransactionAttached",
+        "timeLastUserTransactionEnded",
+        "systemTransactionsEnded",
+        "userTransactionsEnded",
+        "totalTransactionsEnded",
+        "averageUserTransactionRespTime",
+        "peakUserTransactionRespTime",
+        "peakUserTransactionRespTimeAt",
+        "totalTransactionCpuTime",
+        "totalTransactionCpuTimeOnCp",
+        "totalTransactionCpuOffloadOnCp",
+        "averageCompressedRecordLength",
+        "averageUncompressedRecordLength",
+        "averageRecordCompressionPercent",
+    ]
+
+
+def parse_statistics_segment(lines: list[str], start_idx: int) -> tuple[list[str], dict, int]:
+    headers = get_statistics_forced_columns()
+    data = {h: "" for h in headers}
+
+    field_mapping = {
+        "statistics recording": "statisticsRecording",
+        "statistics last reset date and time": "statisticsLastResetDateTime",
+        "elapsed time since reset": "elapsedTimeSinceReset",
+        "statistics interval": "statisticsInterval",
+        "next statistics collection": "nextStatisticsCollection",
+        "statistics end-of-day time": "statisticsEndOfDayTime",
+        "statistics start date and time": "statisticsStartDateTime",
+        "statistics smf records": "statisticsSmfRecords",
+        "statistics smf writes suppressed": "statisticsSmfWritesSuppressed",
+        "statistics smf errors": "statisticsSmfErrors",
+        "current tasks at last attach": "currentTasksAtLastAttach",
+        "mxt value at last attach": "mxtValueAtLastAttach",
+        "time last user transaction attached": "timeLastUserTransactionAttached",
+        "time last user transaction ended": "timeLastUserTransactionEnded",
+        "system transactions ended": "systemTransactionsEnded",
+        "user transactions ended": "userTransactionsEnded",
+        "total transactions ended": "totalTransactionsEnded",
+        "average user transaction resp time": "averageUserTransactionRespTime",
+        "peak user transaction resp time at": "peakUserTransactionRespTimeAt",
+        "peak user transaction resp time": "peakUserTransactionRespTime",
+        "total transaction cpu time on cp": "totalTransactionCpuTimeOnCp",
+        "total transaction cpu offload on cp": "totalTransactionCpuOffloadOnCp",
+        "total transaction cpu time": "totalTransactionCpuTime",
+        "average compressed record length": "averageCompressedRecordLength",
+        "average uncompressed record length": "averageUncompressedRecordLength",
+        "average record compression percent": "averageRecordCompressionPercent",
+    }
+
+    i = start_idx
+    while i < len(lines):
+        line = lines[i]
+
+        if line.strip().startswith("0----") or line.strip().startswith("+_"):
+            break
+
+        if not line.strip() or line.strip().startswith("Applid"):
+            i += 1
+            continue
+
+        line_clean = re.sub(r"^\s*0\s+", "", line)
+        split_result = split_two_columns(line_clean)
+        columns = [split_result[0], split_result[1]] if split_result else [line_clean]
+
+        for col_text in columns:
+            if not col_text or not col_text.strip():
+                continue
+
+            if ":" not in col_text:
+                continue
+
+            label_raw, value_raw = col_text.split(":", 1)
+            label = re.sub(r"\.+", " ", label_raw).strip().lower()
+            label = re.sub(r"\s+", " ", label)
+            value = value_raw.strip()
+
+            if not label or value == "":
+                continue
+
+            for pattern_key, column_name in field_mapping.items():
+                if pattern_key in label:
+                    if data[column_name] == "":
+                        data[column_name] = value
+                    break
+
+        i += 1
+
+    return headers, data, i
+
+
+def insert_statistics_row(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    data: dict
+) -> int:
+    sql = """
+    INSERT INTO cics_statistics
+    (
+        archivo,
+        fecha,
+        statisticsRecording,
+        statisticsLastResetDateTime,
+        elapsedTimeSinceReset,
+        statisticsInterval,
+        nextStatisticsCollection,
+        statisticsEndOfDayTime,
+        statisticsStartDateTime,
+        statisticsSmfRecords,
+        statisticsSmfWritesSuppressed,
+        statisticsSmfErrors,
+        currentTasksAtLastAttach,
+        mxtValueAtLastAttach,
+        timeLastUserTransactionAttached,
+        timeLastUserTransactionEnded,
+        systemTransactionsEnded,
+        userTransactionsEnded,
+        totalTransactionsEnded,
+        averageUserTransactionRespTime,
+        peakUserTransactionRespTime,
+        peakUserTransactionRespTimeAt,
+        totalTransactionCpuTime,
+        totalTransactionCpuTimeOnCp,
+        totalTransactionCpuOffloadOnCp,
+        averageCompressedRecordLength,
+        averageUncompressedRecordLength,
+        averageRecordCompressionPercent
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    if not isinstance(data, dict):
+        print("Statistics: data no es diccionario, se omite")
+        return 0
+
+    statisticsRecording = str(data.get("statisticsRecording", "") or "").strip()
+    statisticsLastResetDateTime = to_sqlserver_datetime_string(data.get("statisticsLastResetDateTime", ""))
+    elapsedTimeSinceReset = to_nonempty_string_or_none(data.get("elapsedTimeSinceReset", ""))
+    statisticsInterval = to_nonempty_string_or_none(data.get("statisticsInterval", ""))
+    nextStatisticsCollection = to_nonempty_string_or_none(data.get("nextStatisticsCollection", ""))
+    statisticsEndOfDayTime = to_nonempty_string_or_none(data.get("statisticsEndOfDayTime", ""))
+    statisticsStartDateTime = to_sqlserver_datetime_string(data.get("statisticsStartDateTime", ""))
+
+    statisticsSmfRecords = to_int_or_none(data.get("statisticsSmfRecords", ""))
+    statisticsSmfWritesSuppressed = to_int_or_none(data.get("statisticsSmfWritesSuppressed", ""))
+    statisticsSmfErrors = to_int_or_none(data.get("statisticsSmfErrors", ""))
+    currentTasksAtLastAttach = to_int_or_none(data.get("currentTasksAtLastAttach", ""))
+    mxtValueAtLastAttach = to_int_or_none(data.get("mxtValueAtLastAttach", ""))
+
+    timeLastUserTransactionAttached = to_sqlserver_datetime_string(data.get("timeLastUserTransactionAttached", ""))
+    timeLastUserTransactionEnded = to_sqlserver_datetime_string(data.get("timeLastUserTransactionEnded", ""))
+
+    systemTransactionsEnded = to_int_or_none(data.get("systemTransactionsEnded", ""))
+    userTransactionsEnded = to_int_or_none(data.get("userTransactionsEnded", ""))
+    totalTransactionsEnded = to_int_or_none(data.get("totalTransactionsEnded", ""))
+
+    averageUserTransactionRespTime = str(data.get("averageUserTransactionRespTime", "") or "").strip()
+    peakUserTransactionRespTime = str(data.get("peakUserTransactionRespTime", "") or "").strip()
+    peakUserTransactionRespTimeAt = to_sqlserver_datetime_string(data.get("peakUserTransactionRespTimeAt", ""))
+    totalTransactionCpuTime = str(data.get("totalTransactionCpuTime", "") or "").strip()
+    totalTransactionCpuTimeOnCp = str(data.get("totalTransactionCpuTimeOnCp", "") or "").strip()
+    totalTransactionCpuOffloadOnCp = str(data.get("totalTransactionCpuOffloadOnCp", "") or "").strip()
+
+    averageCompressedRecordLength = to_int_or_none(data.get("averageCompressedRecordLength", ""))
+    averageUncompressedRecordLength = to_int_or_none(data.get("averageUncompressedRecordLength", ""))
+    averageRecordCompressionPercent = to_float_or_none(data.get("averageRecordCompressionPercent", ""))
+
+    try:
+        cursor.execute(sql, (
+            archivo_id,
+            fecha,
+            statisticsRecording,
+            statisticsLastResetDateTime,
+            elapsedTimeSinceReset,
+            statisticsInterval,
+            nextStatisticsCollection,
+            statisticsEndOfDayTime,
+            statisticsStartDateTime,
+            statisticsSmfRecords,
+            statisticsSmfWritesSuppressed,
+            statisticsSmfErrors,
+            currentTasksAtLastAttach,
+            mxtValueAtLastAttach,
+            timeLastUserTransactionAttached,
+            timeLastUserTransactionEnded,
+            systemTransactionsEnded,
+            userTransactionsEnded,
+            totalTransactionsEnded,
+            averageUserTransactionRespTime,
+            peakUserTransactionRespTime,
+            peakUserTransactionRespTimeAt,
+            totalTransactionCpuTime,
+            totalTransactionCpuTimeOnCp,
+            totalTransactionCpuOffloadOnCp,
+            averageCompressedRecordLength,
+            averageUncompressedRecordLength,
+            averageRecordCompressionPercent,
+        ))
+
+        print("Statistics: registro insertado correctamente")
+        return 1
+
+    except Exception as e:
+        print(f"Statistics: error al insertar - {e}")
         return 0
