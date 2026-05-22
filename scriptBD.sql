@@ -25,6 +25,10 @@ IF OBJECT_ID('dbo.cics_storage_program_subpool', 'U') IS NOT NULL
     DROP TABLE dbo.cics_storage_program_subpool;
 GO
 
+IF OBJECT_ID('dbo.cics_storage_task_subpool', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_storage_task_subpool;
+GO
+
 IF OBJECT_ID('dbo.cics_transaction_manager', 'U') IS NOT NULL
     DROP TABLE dbo.cics_transaction_manager;
 GO
@@ -351,6 +355,49 @@ GO
 
 ALTER TABLE dbo.cics_storage_program_subpool
 ADD CONSTRAINT FK_cics_storage_program_subpool_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+/* =========================================
+   TABLA: cics_storage_task_subpool
+   ========================================= */
+IF OBJECT_ID('dbo.cics_storage_task_subpool', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_storage_task_subpool;
+GO
+
+CREATE TABLE dbo.cics_storage_task_subpool
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    subPoolName NVARCHAR(100) NOT NULL,
+    access NVARCHAR(20) NULL,
+    getmainRequests BIGINT NULL,
+    freemainRequests BIGINT NULL,
+    currentElements INT NULL,
+    currentElementStg BIGINT NULL,
+    averageElementSize BIGINT NULL,
+    currentPageStg NVARCHAR(30) NULL,
+    percentOfDSA DECIMAL(10,2) NULL,
+    peakPageStg NVARCHAR(30) NULL
+);
+GO
+
+CREATE INDEX IX_cics_storage_task_subpool_archivo_fecha
+ON dbo.cics_storage_task_subpool(archivo, fecha);
+GO
+
+CREATE INDEX IX_cics_storage_task_subpool_subPoolName
+ON dbo.cics_storage_task_subpool(subPoolName);
+GO
+
+CREATE UNIQUE INDEX UX_cics_storage_task_subpool_archivo_fecha_subPoolName
+ON dbo.cics_storage_task_subpool(archivo, fecha, subPoolName, access);
+GO
+
+ALTER TABLE dbo.cics_storage_task_subpool
+ADD CONSTRAINT FK_cics_storage_task_subpool_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 

@@ -718,6 +718,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "transactions",
             "transaction manager",
             "storage - domain subpools",
+            "storage - task subpools",
             "storage - program subpools",
             "system status",
             "monitoring",
@@ -916,6 +917,34 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
                 i = j
                 continue
 
+            # Storage - Task Subpools
+            elif ("storage" in title_key and "task" in title_key and "subpool" in title_key):
+
+                columnas, filas, next_j = parse_storage_task_subpool_segment(lines, j)
+
+                key = unique_title(title, out)
+
+                out[key] = {
+                    "nombre": title,
+                    "tipo": "tabla",
+                    "detalles": {
+                        "columnas": columnas,
+                        "filas": filas
+                    }
+                }
+
+                j = next_j
+
+                while (
+                    j < len(lines)
+                    and not reached_segment_boundary(lines[j])
+                    and not _is_totals_line(lines[j])
+                ):
+                    j += 1
+
+                i = j
+                continue
+
             # System Status
             elif title_key == "system status":
                 columnas, data, next_j = parse_system_status_segment(lines, j)
@@ -1040,6 +1069,7 @@ _REQUIRED_TABLES = {
     "cics_files",
     "cics_system_status",
     "cics_transaction_manager",
+    "cics_storage_task_subpool",
     "cics_storage_program_subpool",
     "cics_monitoring",
     "cics_statistics",
@@ -1063,6 +1093,7 @@ def validar_tablas_requeridas(cursor) -> None:
                         'cics_files',
                         'cics_system_status',
                         'cics_transaction_manager',
+                        'cics_storage_task_subpool',
                         'cics_storage_program_subpool',
                         'cics_monitoring',
                         'cics_statistics',
@@ -1165,6 +1196,14 @@ def existe_dumps(cursor, archivo_id: int, fecha: str) -> bool:
 def existe_storage_program_subpool(cursor, archivo_id: int, fecha: str) -> bool:
     cursor.execute(
         "SELECT 1 FROM cics_storage_program_subpool WHERE archivo = ? AND fecha = ?",
+        (archivo_id, fecha),
+    )
+    return cursor.fetchone() is not None
+
+
+def existe_storage_task_subpool(cursor, archivo_id: int, fecha: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM cics_storage_task_subpool WHERE archivo = ? AND fecha = ?",
         (archivo_id, fecha),
     )
     return cursor.fetchone() is not None
@@ -1326,6 +1365,48 @@ def insertar_storage_program_subpool_si_falta(fecha_actual: str, nombre_archivo:
 
     except Exception as e:
         print(f"insertar_storage_program_subpool_si_falta: error - {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def insertar_storage_task_subpool_si_falta(fecha_actual: str, nombre_archivo: str, diccionario_segmentos: dict) -> int:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    try:
+        validar_tablas_requeridas(cursor)
+        archivo_nombre = nombre_archivo.replace(".TXT", "").replace(".JSON", "").strip().upper()
+        archivo_id = upsert_archivo(cursor, archivo_nombre)
+        conn.commit()
+
+        if existe_storage_task_subpool(cursor, archivo_id, fecha_actual):
+            print(f"Storage Task Subpools ya existe para {archivo_nombre} fecha={fecha_actual}, se omite.")
+            return 0
+
+        payload = None
+        for k, v in diccionario_segmentos.items():
+            if str(k).strip().lower() == "storage - task subpools":
+                payload = v
+                break
+
+        rows = []
+        if isinstance(payload, dict) and payload.get("tipo") == "tabla":
+            detalles = payload.get("detalles") or {}
+            rows = detalles.get("filas") or []
+        elif isinstance(payload, dict) and "filas" in payload:
+            rows = payload.get("filas") or []
+
+        if not isinstance(rows, list) or not rows:
+            print(f"Storage Task Subpools: no hay datos para {archivo_nombre} fecha={fecha_actual}")
+            return 0
+
+        inserted = insert_storage_task_subpool_rows(cursor, archivo_id, fecha_actual, rows, batch_size=1000)
+        conn.commit()
+        return inserted
+
+    except Exception as e:
+        print(f"insertar_storage_task_subpool_si_falta: error - {e}")
         return 0
     finally:
         conn.close()
@@ -1551,6 +1632,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Files")
     upsert_segmento(cursor, "Transactions")
     upsert_segmento(cursor, "Storage - Domain Subpools")
+    upsert_segmento(cursor, "Storage - Task Subpools")
     upsert_segmento(cursor, "Storage - Program Subpools")
     upsert_segmento(cursor, "System Status")
     upsert_segmento(cursor, "Transaction Manager")
@@ -1758,7 +1840,48 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 6) INSERTAR STORAGE PROGRAM SUBPOOLS
+    # 6) INSERTAR STORAGE TASK SUBPOOLS
+    # =====================================================
+    storage_task_payload = None
+
+    for k, v in diccionarioSegmentos.items():
+        if str(k).strip().lower() == "storage - task subpools":
+            storage_task_payload = v
+            break
+
+    storage_task_rows = []
+
+    if isinstance(storage_task_payload, dict):
+
+        if storage_task_payload.get("tipo") == "tabla":
+            detalles = storage_task_payload.get("detalles") or {}
+            storage_task_rows = detalles.get("filas") or []
+
+        elif "filas" in storage_task_payload:
+            storage_task_rows = storage_task_payload.get("filas") or []
+
+    inserted_storage_task = 0
+
+    if isinstance(storage_task_rows, list) and storage_task_rows:
+
+        rows_to_insert = (
+            storage_task_rows[:cantidadRegistroPrueba]
+            if boolPrueba
+            else storage_task_rows
+        )
+
+        inserted_storage_task = insert_storage_task_subpool_rows(
+            cursor,
+            archivo_id,
+            fechaActual,
+            rows_to_insert,
+            batch_size=1000
+        )
+
+        conn.commit()
+
+    # =====================================================
+    # 7) INSERTAR STORAGE PROGRAM SUBPOOLS
     # =====================================================
     storage_program_payload = None
 
@@ -1799,7 +1922,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 7) INSERTAR SYSTEM STATUS
+    # 8) INSERTAR SYSTEM STATUS
     # =====================================================
     system_status_payload = None
 
@@ -1832,7 +1955,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 8) INSERTAR TRANSACTION MANAGER
+    # 9) INSERTAR TRANSACTION MANAGER
     # =====================================================
     transaction_manager_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Transaction Manager")
 
@@ -1849,7 +1972,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 9) INSERTAR MONITORING
+    # 10) INSERTAR MONITORING
     # =====================================================
     monitoring_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Monitoring")
 
@@ -1866,7 +1989,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 10) INSERTAR STATISTICS
+    # 11) INSERTAR STATISTICS
     # =====================================================
     statistics_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Statistics")
 
@@ -1883,7 +2006,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 11) INSERTAR TRACE STATUS
+    # 12) INSERTAR TRACE STATUS
     # =====================================================
     trace_status_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Trace Status")
 
@@ -1906,6 +2029,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Files insertados: {inserted_files} | "
         f"Transactions insertadas: {inserted_tx} | "
         f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
+        f"Storage Task Subpools insertados: {inserted_storage_task} | "
         f"Storage Program Subpools insertados: {inserted_storage_program} | "
         f"System Status insertado: {inserted_system_status} | "
         f"Transaction Manager insertado: {inserted_transaction_manager} | "
@@ -2529,6 +2653,21 @@ def get_storage_program_subpool_forced_columns():
         "currentStorage",
         "peakStorage",
     ]
+
+
+def get_storage_task_subpool_forced_columns():
+    return [
+        "subPoolName",
+        "access",
+        "getmainRequests",
+        "freemainRequests",
+        "currentElements",
+        "currentElementStg",
+        "averageElementSize",
+        "currentPageStg",
+        "percentOfDSA",
+        "peakPageStg",
+    ]
     
 
 
@@ -2669,6 +2808,75 @@ def parse_storage_program_subpool_segment(lines, start_idx):
             or row["subPoolName"].lower() == "name"
             or row["subPoolName"].lower() == "subpool"
         ):
+            i += 1
+            continue
+
+        rows.append(row)
+        i += 1
+
+    return headers, rows, i
+
+
+def parse_storage_task_subpool_segment(lines, start_idx):
+
+    headers = get_storage_task_subpool_forced_columns()
+    rows = []
+
+    i = start_idx
+
+    while i < len(lines):
+
+        line = lines[i].rstrip("\n")
+
+        if reached_segment_boundary(line) or _is_totals_line(line):
+            break
+
+        if is_page_header(line):
+            i += 1
+            continue
+
+        if not line.strip():
+            i += 1
+            continue
+
+        low = line.lower()
+
+        if (
+            "subpool" in low
+            or "getmain" in low
+            or "freemain" in low
+            or "element stg" in low
+            or "page stg" in low
+            or "% of" in low
+        ):
+            i += 1
+            continue
+
+        if re.match(r"^\s*\+", line):
+            i += 1
+            continue
+
+        line_clean = re.sub(r"^\s*0\s+", "", line).strip()
+        parts = re.split(r"\s{2,}", line_clean)
+
+        if len(parts) < 10:
+            i += 1
+            continue
+
+        row = {
+            "subPoolName": parts[0].strip(),
+            "access": parts[1].strip(),
+            "getmainRequests": parts[2].replace(",", "").strip(),
+            "freemainRequests": parts[3].replace(",", "").strip(),
+            "currentElements": parts[4].replace(",", "").strip(),
+            "currentElementStg": parts[5].replace(",", "").strip(),
+            "averageElementSize": parts[6].replace(",", "").strip(),
+            "currentPageStg": parts[7].strip(),
+            "percentOfDSA": parts[8].replace("%", "").strip(),
+            "peakPageStg": parts[9].strip(),
+        }
+
+        if not row["subPoolName"] or row["subPoolName"].lower() in {"name", "subpool"}:
             i += 1
             continue
 
@@ -2851,6 +3059,104 @@ def insert_storage_program_subpool_rows(
 
     print(
         f"Storage Program Subpools: total_rows={total_rows}, inserted={inserted}, "
+        f"skipped_empty_name={skipped_empty_name}"
+    )
+
+    return inserted
+
+
+def insert_storage_task_subpool_rows(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    rows: list[dict],
+    batch_size: int = 1000
+) -> int:
+
+    sql = """
+    INSERT INTO cics_storage_task_subpool
+    (
+        archivo,
+        fecha,
+        subPoolName,
+        access,
+        getmainRequests,
+        freemainRequests,
+        currentElements,
+        currentElementStg,
+        averageElementSize,
+        currentPageStg,
+        percentOfDSA,
+        peakPageStg
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    inserted = 0
+    total_rows = 0
+    skipped_empty_name = 0
+    batch = []
+
+    try:
+        cursor.fast_executemany = True
+    except Exception:
+        pass
+
+    for r in rows:
+
+        total_rows += 1
+
+        if not isinstance(r, dict):
+            continue
+
+        subPoolName = str(r.get("subPoolName", "") or "").strip()
+
+        if not subPoolName:
+            skipped_empty_name += 1
+            continue
+
+        access = str(r.get("access", "") or "").strip()
+        getmainRequests = to_int_or_none(r.get("getmainRequests", ""))
+        freemainRequests = to_int_or_none(r.get("freemainRequests", ""))
+        currentElements = to_int_or_none(r.get("currentElements", ""))
+        currentElementStg = to_int_or_none(r.get("currentElementStg", ""))
+        averageElementSize = to_int_or_none(r.get("averageElementSize", ""))
+        currentPageStg = str(r.get("currentPageStg", "") or "").strip()
+
+        percentOfDSA_raw = str(r.get("percentOfDSA", "") or "").replace("%", "").strip()
+        try:
+            percentOfDSA = float(percentOfDSA_raw) if percentOfDSA_raw else None
+        except Exception:
+            percentOfDSA = None
+
+        peakPageStg = str(r.get("peakPageStg", "") or "").strip()
+
+        batch.append((
+            archivo_id,
+            fecha,
+            subPoolName,
+            access,
+            getmainRequests,
+            freemainRequests,
+            currentElements,
+            currentElementStg,
+            averageElementSize,
+            currentPageStg,
+            percentOfDSA,
+            peakPageStg,
+        ))
+
+        if len(batch) >= batch_size:
+            cursor.executemany(sql, batch)
+            inserted += len(batch)
+            batch.clear()
+
+    if batch:
+        cursor.executemany(sql, batch)
+        inserted += len(batch)
+
+    print(
+        f"Storage Task Subpools: total_rows={total_rows}, inserted={inserted}, "
         f"skipped_empty_name={skipped_empty_name}"
     )
 
