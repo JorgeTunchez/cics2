@@ -29,6 +29,10 @@ IF OBJECT_ID('dbo.cics_storage_task_subpool', 'U') IS NOT NULL
     DROP TABLE dbo.cics_storage_task_subpool;
 GO
 
+IF OBJECT_ID('dbo.cics_data_tables_requests', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_data_tables_requests;
+GO
+
 IF OBJECT_ID('dbo.cics_transaction_manager', 'U') IS NOT NULL
     DROP TABLE dbo.cics_transaction_manager;
 GO
@@ -274,6 +278,50 @@ GO
 
 ALTER TABLE dbo.cics_files
 ADD CONSTRAINT FK_cics_files_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+/* =========================================
+   TABLA: cics_data_tables_requests
+   ========================================= */
+IF OBJECT_ID('dbo.cics_data_tables_requests', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_data_tables_requests;
+GO
+
+CREATE TABLE dbo.cics_data_tables_requests
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    fileName NVARCHAR(100) NOT NULL,
+    successfulReads BIGINT NULL,
+    recordsNotFound BIGINT NULL,
+    addsViaRead BIGINT NULL,
+    addsViaApi BIGINT NULL,
+    addsRejected BIGINT NULL,
+    addsFull BIGINT NULL,
+    rewriteRequests BIGINT NULL,
+    deleteRequests BIGINT NULL,
+    readRetries BIGINT NULL,
+    changeResponseLockWaits BIGINT NULL
+);
+GO
+
+CREATE INDEX IX_cics_data_tables_requests_archivo_fecha
+ON dbo.cics_data_tables_requests(archivo, fecha);
+GO
+
+CREATE INDEX IX_cics_data_tables_requests_fileName
+ON dbo.cics_data_tables_requests(fileName);
+GO
+
+CREATE UNIQUE INDEX UX_cics_data_tables_requests_archivo_fecha_fileName
+ON dbo.cics_data_tables_requests(archivo, fecha, fileName);
+GO
+
+ALTER TABLE dbo.cics_data_tables_requests
+ADD CONSTRAINT FK_cics_data_tables_requests_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 
