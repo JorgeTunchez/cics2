@@ -115,6 +115,41 @@ def backfill_statistics_desde_json(directorio_salida_fecha: Path, fecha_actual: 
     print(f"Backfill de Statistics completado. Registros insertados: {inserted_total}")
 
 
+def backfill_trace_status_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+    """
+    Inserta Trace Status faltantes desde JSON ya generados, sin reintentar
+    la carga completa de tablas con restricciones únicas.
+    """
+    if not directorio_salida_fecha.exists():
+        print("No existe carpeta de SALIDA para backfill de Trace Status.")
+        return
+
+    archivos_json = sorted(
+        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
+    )
+
+    if not archivos_json:
+        print("No hay archivos JSON para backfill de Trace Status.")
+        return
+
+    inserted_total = 0
+
+    for json_path in archivos_json:
+        nombre_archivo_json = json_path.name.upper()
+
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+            nombre_txt = nombre_archivo_json.replace(".JSON", ".TXT")
+            inserted = insertar_trace_status_si_falta(fecha_actual, nombre_txt, data)
+            inserted_total += inserted
+
+        except Exception as e:
+            print(f"  [ERROR] Error backfilleando Trace Status desde {nombre_archivo_json}: {e}\n")
+            raise
+
+    print(f"Backfill de Trace Status completado. Registros insertados: {inserted_total}")
+
+
 def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
     """
     Procesa una carpeta de fecha:
@@ -131,9 +166,10 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
 
     if carpeta_ya_procesada(fecha_carpeta, nombre_carpeta):
         print(f"Carpeta ya procesada anteriormente: {nombre_carpeta}. Se omite.")
-        if not directorio_salida_fecha.exists():
-            generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)
+        # Regenerar JSON para incluir segmentos nuevos soportados por parser.
+        generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)
         backfill_statistics_desde_json(directorio_salida_fecha, fecha_carpeta)
+        backfill_trace_status_desde_json(directorio_salida_fecha, fecha_carpeta)
         return
 
     validar_cantidad_archivos(ruta_carpeta, 6)
@@ -154,9 +190,10 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
             f"Ya existen {cantidad_registros} registros en base de datos "
             f"para la fecha {fecha_encabezado}. No se realizará la carga de esta carpeta."
         )
-        if not directorio_salida_fecha.exists():
-            generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)
+        # Regenerar JSON para incluir segmentos nuevos soportados por parser.
+        generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)
         backfill_statistics_desde_json(directorio_salida_fecha, fecha_encabezado)
+        backfill_trace_status_desde_json(directorio_salida_fecha, fecha_encabezado)
         return
 
     generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)

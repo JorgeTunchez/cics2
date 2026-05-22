@@ -1,6 +1,14 @@
 /* =========================================
    LIMPIEZA EN ORDEN DE DEPENDENCIAS
    ========================================= */
+IF OBJECT_ID('dbo.cics_dumps', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_dumps;
+GO
+
+IF OBJECT_ID('dbo.cics_trace_status', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_trace_status;
+GO
+
 IF OBJECT_ID('dbo.cics_statistics', 'U') IS NOT NULL
     DROP TABLE dbo.cics_statistics;
 GO
@@ -422,6 +430,59 @@ GO
 
 ALTER TABLE dbo.cics_monitoring
 ADD CONSTRAINT FK_cics_monitoring_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+/* =========================================
+   TABLA: cics_trace_status
+   Un registro por archivo y fecha
+   ========================================= */
+CREATE TABLE dbo.cics_trace_status
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+
+    internalTraceStatus    NVARCHAR(30)  NULL,
+    auxiliaryTraceStatus   NVARCHAR(30)  NULL,
+    gtfTraceStatus         NVARCHAR(30)  NULL,
+    internalTraceTableSize NVARCHAR(30)  NULL,
+    currentAuxiliaryDataset NVARCHAR(10) NULL,
+    auxiliarySwitchStatus  NVARCHAR(30)  NULL
+);
+GO
+
+CREATE UNIQUE INDEX UX_cics_trace_status_archivo_fecha
+ON dbo.cics_trace_status(archivo, fecha);
+GO
+
+ALTER TABLE dbo.cics_trace_status
+ADD CONSTRAINT FK_cics_trace_status_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+/* =========================================
+    TABLA: cics_dumps
+   Un registro por archivo y fecha
+   ========================================= */
+CREATE TABLE dbo.cics_dumps
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    systemDumps INT NULL,
+    systemDumpsSuppressed INT NULL,
+    transactionDumps INT NULL,
+    transactionDumpsSuppressed INT NULL
+);
+GO
+
+CREATE UNIQUE INDEX UX_cics_dumps_archivo_fecha
+ON dbo.cics_dumps(archivo, fecha);
+GO
+
+ALTER TABLE dbo.cics_dumps
+ADD CONSTRAINT FK_cics_dumps_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 

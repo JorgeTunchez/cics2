@@ -720,6 +720,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "system status",
             "monitoring",
             "statistics",
+            "trace status",
         }
 
     allowed_segments = {clean_segment_title(x).lower() for x in allowed_segments}
@@ -929,6 +930,36 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             i = j
             continue
 
+        # Detectar título-antes-de-underline corto (ej. "0Trace Status ... Dumps" + "+__  __")
+        if (
+            lines[i].startswith("0")
+            and not is_segment_end(lines[i])
+            and len(lines[i]) > 1
+        ):
+            title_line_raw = lines[i][1:].strip()
+            next_idx = i + 1
+            while next_idx < len(lines) and (lines[next_idx].strip() == "" or is_page_header(lines[next_idx])):
+                next_idx += 1
+            if next_idx < len(lines) and lines[next_idx].startswith("+_"):
+                split_fwd = split_two_columns(title_line_raw)
+                if split_fwd and is_title_text(split_fwd[0]) and is_title_text(split_fwd[1]):
+                    left_fwd = clean_segment_title(split_fwd[0].lstrip("-").strip()).lower()
+                    if left_fwd == "trace status" and "trace status" in allowed_segments:
+                        j = next_idx + 1
+                        while j < len(lines) and (lines[j].strip() == "" or is_page_header(lines[j])):
+                            j += 1
+                        columnas, data, trace_next_j = parse_trace_status_segment(lines, j)
+                        key = unique_title("Trace Status", out)
+                        out[key] = {
+                            "nombre": "Trace Status",
+                            "tipo": "informacion",
+                            "detalles": {"columnas": columnas, "datos": data}
+                        }
+                        while trace_next_j < len(lines) and not reached_segment_boundary(lines[trace_next_j]) and not _is_totals_line(lines[trace_next_j]):
+                            trace_next_j += 1
+                        i = trace_next_j
+                        continue
+
         i += 1
 
     if debug_storage:
@@ -957,6 +988,8 @@ _REQUIRED_TABLES = {
     "cics_system_status",
     "cics_monitoring",
     "cics_statistics",
+    "cics_trace_status",
+    "cics_dumps",
 }
 
 
@@ -975,7 +1008,9 @@ def validar_tablas_requeridas(cursor) -> None:
                         'cics_files',
                         'cics_system_status',
                         'cics_monitoring',
-                        'cics_statistics'
+                        'cics_statistics',
+                        'cics_trace_status',
+                        'cics_dumps'
                     )
     """)
     existentes = {row[0].lower() for row in cursor.fetchall()}
@@ -1014,6 +1049,7 @@ def upsert_segmento(cursor, segmento_nombre: str) -> int:
     return int(row[0])
 
 
+
 def extraer_datos_segmento_informacion(diccionario_segmentos: dict, nombre_segmento: str) -> dict:
     payload = None
 
@@ -1045,27 +1081,106 @@ def existe_statistics(cursor, archivo_id: int, fecha: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def existe_trace_status(cursor, archivo_id: int, fecha: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM cics_trace_status WHERE archivo = ? AND fecha = ?",
+        (archivo_id, fecha),
+    )
+    return cursor.fetchone() is not None
+
+
+def existe_dumps(cursor, archivo_id: int, fecha: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM cics_dumps WHERE archivo = ? AND fecha = ?",
+        (archivo_id, fecha),
+    )
+    return cursor.fetchone() is not None
+
+
 def insertar_statistics_si_falta(fecha_actual: str, nombre_archivo: str, diccionario_segmentos: dict) -> int:
     conn = conectar_base_datos()
     cursor = conn.cursor()
 
     try:
         validar_tablas_requeridas(cursor)
-
         archivo_nombre = nombre_archivo.replace(".TXT", "").replace(".JSON", "").strip().upper()
         archivo_id = upsert_archivo(cursor, archivo_nombre)
-        statistics_data = extraer_datos_segmento_informacion(diccionario_segmentos, "Statistics")
-
-        if not statistics_data:
-            return 0
+        conn.commit()
 
         if existe_statistics(cursor, archivo_id, fecha_actual):
+            print(f"Statistics ya existe para {archivo_nombre} fecha={fecha_actual}, se omite.")
+            return 0
+
+        statistics_data = extraer_datos_segmento_informacion(diccionario_segmentos, "Statistics")
+        if not isinstance(statistics_data, dict) or not statistics_data:
+            print(f"Statistics: no hay datos para {archivo_nombre} fecha={fecha_actual}")
             return 0
 
         inserted = insert_statistics_row(cursor, archivo_id, fecha_actual, statistics_data)
         conn.commit()
         return inserted
 
+    except Exception as e:
+        print(f"insertar_statistics_si_falta: error - {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def insertar_trace_status_si_falta(fecha_actual: str, nombre_archivo: str, diccionario_segmentos: dict) -> int:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    try:
+        validar_tablas_requeridas(cursor)
+        archivo_nombre = nombre_archivo.replace(".TXT", "").replace(".JSON", "").strip().upper()
+        archivo_id = upsert_archivo(cursor, archivo_nombre)
+        conn.commit()
+
+        trace_status_data = extraer_datos_segmento_informacion(diccionario_segmentos, "Trace Status")
+        if not isinstance(trace_status_data, dict) or not trace_status_data:
+            print(f"Trace Status: no hay datos para {archivo_nombre} fecha={fecha_actual}")
+            return 0
+
+        if existe_trace_status(cursor, archivo_id, fecha_actual):
+            # Si Trace Status ya existe (carga anterior), solo completar Dumps en la tabla nueva.
+            if existe_dumps(cursor, archivo_id, fecha_actual):
+                print(f"Dumps ya existe para {archivo_nombre} fecha={fecha_actual}, se omite.")
+                return 0
+
+            cursor.execute(
+                """
+                INSERT INTO cics_dumps
+                (
+                    archivo,
+                    fecha,
+                    systemDumps,
+                    systemDumpsSuppressed,
+                    transactionDumps,
+                    transactionDumpsSuppressed
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    archivo_id,
+                    fecha_actual,
+                    to_int_or_none(trace_status_data.get("systemDumps", "")),
+                    to_int_or_none(trace_status_data.get("systemDumpsSuppressed", "")),
+                    to_int_or_none(trace_status_data.get("transactionDumps", "")),
+                    to_int_or_none(trace_status_data.get("transactionDumpsSuppressed", "")),
+                )
+            )
+            conn.commit()
+            print(f"Dumps insertado para Trace Status existente: {archivo_nombre} fecha={fecha_actual}")
+            return 1
+
+        inserted = insert_trace_status_row(cursor, archivo_id, fecha_actual, trace_status_data)
+        conn.commit()
+        return inserted
+
+    except Exception as e:
+        print(f"insertar_trace_status_si_falta: error - {e}")
+        return 0
     finally:
         conn.close()
 
@@ -1293,6 +1408,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "System Status")
     upsert_segmento(cursor, "Monitoring")
     upsert_segmento(cursor, "Statistics")
+    upsert_segmento(cursor, "Trace Status")
     conn.commit()
 
     # =====================================================
@@ -1560,6 +1676,23 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
 
         conn.commit()
 
+    # =====================================================
+    # 9) INSERTAR TRACE STATUS
+    # =====================================================
+    trace_status_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Trace Status")
+
+    inserted_trace_status = 0
+
+    if isinstance(trace_status_data, dict) and trace_status_data:
+        inserted_trace_status = insert_trace_status_row(
+            cursor,
+            archivo_id,
+            fechaActual,
+            trace_status_data
+        )
+
+        conn.commit()
+
     print(
         f"Archivo: {archivo_nombre} (id={archivo_id}) | "
         f"Programs insertados: {inserted_prog} | "
@@ -1569,7 +1702,8 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
         f"System Status insertado: {inserted_system_status} | "
         f"Monitoring insertado: {inserted_monitoring} | "
-        f"Statistics insertado: {inserted_statistics}"
+        f"Statistics insertado: {inserted_statistics} | "
+        f"Trace Status insertado: {inserted_trace_status}"
     )
 
     conn.close()
@@ -2616,6 +2750,157 @@ def insert_system_status_row(
     
     except Exception as e:
         print(f"System Status: error al insertar - {e}")
+        return 0
+
+
+# =====================================================
+# TRACE STATUS
+# =====================================================
+
+def get_trace_status_forced_columns() -> list[str]:
+    return [
+        "internalTraceStatus",
+        "auxiliaryTraceStatus",
+        "gtfTraceStatus",
+        "internalTraceTableSize",
+        "currentAuxiliaryDataset",
+        "auxiliarySwitchStatus",
+        "systemDumps",
+        "systemDumpsSuppressed",
+        "transactionDumps",
+        "transactionDumpsSuppressed",
+    ]
+
+
+def parse_trace_status_segment(lines: list[str], start_idx: int) -> tuple[list[str], dict, int]:
+    """
+    Parsea el segmento Trace Status / Dumps (dos columnas con KV).
+    Retorna: (columnas, diccionario_datos, índice_siguiente)
+    """
+    headers = get_trace_status_forced_columns()
+    data = {h: "" for h in headers}
+
+    field_mapping = {
+        "internal trace status": "internalTraceStatus",
+        "auxiliary trace status": "auxiliaryTraceStatus",
+        "gtf trace status": "gtfTraceStatus",
+        "internal trace table size": "internalTraceTableSize",
+        "current auxiliary dataset": "currentAuxiliaryDataset",
+        "auxiliary switch status": "auxiliarySwitchStatus",
+        "system dumps suppressed": "systemDumpsSuppressed",
+        "system dumps": "systemDumps",
+        "transaction dumps suppressed": "transactionDumpsSuppressed",
+        "transaction dumps": "transactionDumps",
+    }
+
+    i = start_idx
+    while i < len(lines):
+        line = lines[i]
+
+        if line.strip().startswith("0----") or line.strip().startswith("+_"):
+            break
+
+        if not line.strip() or line.strip().startswith("Applid"):
+            i += 1
+            continue
+
+        line_clean = re.sub(r"^\s*0\s+", "", line)
+        split_result = split_two_columns(line_clean)
+        columns = [split_result[0], split_result[1]] if split_result else [line_clean]
+
+        for col_text in columns:
+            if not col_text or not col_text.strip() or ":" not in col_text:
+                continue
+
+            label_raw, value_raw = col_text.split(":", 1)
+            label = re.sub(r"\.+", " ", label_raw).strip().lower()
+            label = re.sub(r"\s+", " ", label)
+
+            value = value_raw.strip()
+
+            if not label or not value:
+                continue
+
+            for pattern_key, column_name in field_mapping.items():
+                if pattern_key in label:
+                    if data[column_name] == "":
+                        data[column_name] = value
+                    break
+
+        i += 1
+
+    return headers, data, i
+
+
+def insert_trace_status_row(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    data: dict
+) -> int:
+    """
+    Inserta un registro del segmento Trace Status en cics_trace_status.
+    Retorna 1 si se insertó correctamente, 0 si se omitió.
+    """
+    sql_trace = """
+    INSERT INTO cics_trace_status
+    (
+        archivo, fecha,
+        internalTraceStatus, auxiliaryTraceStatus, gtfTraceStatus,
+        internalTraceTableSize, currentAuxiliaryDataset, auxiliarySwitchStatus
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    sql_dumps = """
+    INSERT INTO cics_dumps
+    (
+        archivo,
+        fecha,
+        systemDumps,
+        systemDumpsSuppressed,
+        transactionDumps,
+        transactionDumpsSuppressed
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    """
+
+    if not isinstance(data, dict):
+        print("Trace Status: data no es diccionario, se omite")
+        return 0
+
+    internalTraceStatus     = str(data.get("internalTraceStatus", "") or "").strip()
+    auxiliaryTraceStatus    = str(data.get("auxiliaryTraceStatus", "") or "").strip()
+    gtfTraceStatus          = str(data.get("gtfTraceStatus", "") or "").strip()
+    internalTraceTableSize  = str(data.get("internalTraceTableSize", "") or "").strip()
+    currentAuxiliaryDataset = str(data.get("currentAuxiliaryDataset", "") or "").strip()
+    auxiliarySwitchStatus   = str(data.get("auxiliarySwitchStatus", "") or "").strip()
+
+    systemDumps                = to_int_or_none(data.get("systemDumps", ""))
+    systemDumpsSuppressed      = to_int_or_none(data.get("systemDumpsSuppressed", ""))
+    transactionDumps           = to_int_or_none(data.get("transactionDumps", ""))
+    transactionDumpsSuppressed = to_int_or_none(data.get("transactionDumpsSuppressed", ""))
+
+    try:
+        cursor.execute(sql_trace, (
+            archivo_id, fecha,
+            internalTraceStatus, auxiliaryTraceStatus, gtfTraceStatus,
+            internalTraceTableSize, currentAuxiliaryDataset, auxiliarySwitchStatus
+        ))
+
+        cursor.execute(sql_dumps, (
+            archivo_id,
+            fecha,
+            systemDumps,
+            systemDumpsSuppressed,
+            transactionDumps,
+            transactionDumpsSuppressed
+        ))
+
+        print("Trace Status + Dumps: registro insertado correctamente")
+        return 1
+    except Exception as e:
+        print(f"Trace Status + Dumps: error al insertar - {e}")
         return 0
 
 
