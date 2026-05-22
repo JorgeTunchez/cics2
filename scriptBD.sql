@@ -33,6 +33,10 @@ IF OBJECT_ID('dbo.cics_data_tables_requests', 'U') IS NOT NULL
     DROP TABLE dbo.cics_data_tables_requests;
 GO
 
+IF OBJECT_ID('dbo.cics_data_tables_storage', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_data_tables_storage;
+GO
+
 IF OBJECT_ID('dbo.cics_transaction_manager', 'U') IS NOT NULL
     DROP TABLE dbo.cics_transaction_manager;
 GO
@@ -322,6 +326,51 @@ GO
 
 ALTER TABLE dbo.cics_data_tables_requests
 ADD CONSTRAINT FK_cics_data_tables_requests_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+/* =========================================
+   TABLA: cics_data_tables_storage
+   ========================================= */
+IF OBJECT_ID('dbo.cics_data_tables_storage', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_data_tables_storage;
+GO
+
+CREATE TABLE dbo.cics_data_tables_storage
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    fileName NVARCHAR(100) NOT NULL,
+    tableType NVARCHAR(20) NULL,
+    currentRecords BIGINT NULL,
+    peakRecords BIGINT NULL,
+    totalStorageAllocated BIGINT NULL,
+    totalStorageInUse BIGINT NULL,
+    entriesStorageAllocated BIGINT NULL,
+    entriesStorageInUse BIGINT NULL,
+    indexStorageAllocated BIGINT NULL,
+    indexStorageInUse BIGINT NULL,
+    dataStorageAllocated BIGINT NULL,
+    dataStorageInUse BIGINT NULL
+);
+GO
+
+CREATE INDEX IX_cics_data_tables_storage_archivo_fecha
+ON dbo.cics_data_tables_storage(archivo, fecha);
+GO
+
+CREATE INDEX IX_cics_data_tables_storage_fileName
+ON dbo.cics_data_tables_storage(fileName);
+GO
+
+CREATE UNIQUE INDEX UX_cics_data_tables_storage_archivo_fecha_fileName
+ON dbo.cics_data_tables_storage(archivo, fecha, fileName);
+GO
+
+ALTER TABLE dbo.cics_data_tables_storage
+ADD CONSTRAINT FK_cics_data_tables_storage_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 

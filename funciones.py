@@ -716,6 +716,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "temporary storage queues",
             "files",
             "data tables - requests",
+            "data tables - storage",
             "transactions",
             "transaction manager",
             "storage - domain subpools",
@@ -851,6 +852,34 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             elif title_key == "data tables - requests":
 
                 columnas, filas, next_j = parse_data_tables_requests_segment(lines, j)
+
+                key = unique_title(title, out)
+
+                out[key] = {
+                    "nombre": title,
+                    "tipo": "tabla",
+                    "detalles": {
+                        "columnas": columnas,
+                        "filas": filas
+                    }
+                }
+
+                j = next_j
+
+                while (
+                    j < len(lines)
+                    and not reached_segment_boundary(lines[j])
+                    and not _is_totals_line(lines[j])
+                ):
+                    j += 1
+
+                i = j
+                continue
+
+            # Data Tables - Storage
+            elif title_key == "data tables - storage":
+
+                columnas, filas, next_j = parse_data_tables_storage_segment(lines, j)
 
                 key = unique_title(title, out)
 
@@ -1106,6 +1135,39 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
                 }
                 break
 
+    if "data tables - storage" in allowed_segments:
+        already_present = any(
+            isinstance(value, dict)
+            and str(value.get("nombre", "")).strip().lower() == "data tables - storage"
+            for value in out.values()
+        )
+
+        if not already_present:
+            for idx, line in enumerate(lines):
+                if clean_segment_title(line.lstrip("-").strip()).lower() != "data tables - storage":
+                    continue
+
+                j = idx + 1
+                while j < len(lines) and (
+                    lines[j].strip() == ""
+                    or is_page_header(lines[j])
+                    or is_separator_line(lines[j])
+                    or lines[j].startswith("+_")
+                ):
+                    j += 1
+
+                columnas, filas, _ = parse_data_tables_storage_segment(lines, j)
+                key = unique_title("Data Tables - Storage", out)
+                out[key] = {
+                    "nombre": "Data Tables - Storage",
+                    "tipo": "tabla",
+                    "detalles": {
+                        "columnas": columnas,
+                        "filas": filas,
+                    },
+                }
+                break
+
     if debug_storage:
         if storage_seen:
             print(
@@ -1128,6 +1190,7 @@ _REQUIRED_TABLES = {
     "cics_programs",
     "cics_transactions",
     "cics_data_tables_requests",
+    "cics_data_tables_storage",
     "cics_temporary_storage_queues",
     "cics_files",
     "cics_system_status",
@@ -1153,6 +1216,7 @@ def validar_tablas_requeridas(cursor) -> None:
                         'cics_programs',
                         'cics_transactions',
                         'cics_data_tables_requests',
+                        'cics_data_tables_storage',
                         'cics_temporary_storage_queues',
                         'cics_files',
                         'cics_system_status',
@@ -1276,6 +1340,14 @@ def existe_storage_task_subpool(cursor, archivo_id: int, fecha: str) -> bool:
 def existe_data_tables_requests(cursor, archivo_id: int, fecha: str) -> bool:
     cursor.execute(
         "SELECT 1 FROM cics_data_tables_requests WHERE archivo = ? AND fecha = ?",
+        (archivo_id, fecha),
+    )
+    return cursor.fetchone() is not None
+
+
+def existe_data_tables_storage(cursor, archivo_id: int, fecha: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM cics_data_tables_storage WHERE archivo = ? AND fecha = ?",
         (archivo_id, fecha),
     )
     return cursor.fetchone() is not None
@@ -1526,6 +1598,48 @@ def insertar_data_tables_requests_si_falta(fecha_actual: str, nombre_archivo: st
         conn.close()
 
 
+def insertar_data_tables_storage_si_falta(fecha_actual: str, nombre_archivo: str, diccionario_segmentos: dict) -> int:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    try:
+        validar_tablas_requeridas(cursor)
+        archivo_nombre = nombre_archivo.replace(".TXT", "").replace(".JSON", "").strip().upper()
+        archivo_id = upsert_archivo(cursor, archivo_nombre)
+        conn.commit()
+
+        if existe_data_tables_storage(cursor, archivo_id, fecha_actual):
+            print(f"Data Tables - Storage ya existe para {archivo_nombre} fecha={fecha_actual}, se omite.")
+            return 0
+
+        payload = None
+        for k, v in diccionario_segmentos.items():
+            if str(k).strip().lower() == "data tables - storage":
+                payload = v
+                break
+
+        rows = []
+        if isinstance(payload, dict) and payload.get("tipo") == "tabla":
+            detalles = payload.get("detalles") or {}
+            rows = detalles.get("filas") or []
+        elif isinstance(payload, dict) and "filas" in payload:
+            rows = payload.get("filas") or []
+
+        if not isinstance(rows, list) or not rows:
+            print(f"Data Tables - Storage: no hay datos para {archivo_nombre} fecha={fecha_actual}")
+            return 0
+
+        inserted = insert_data_tables_storage_rows(cursor, archivo_id, fecha_actual, rows, batch_size=1000)
+        conn.commit()
+        return inserted
+
+    except Exception as e:
+        print(f"insertar_data_tables_storage_si_falta: error - {e}")
+        return 0
+    finally:
+        conn.close()
+
+
 # Inserta filas del segmento Programs en cics_programs usando executemany por lotes
 def insert_programs_rows(cursor, archivo_id: int, fecha: str, rows: list[dict], batch_size: int = 1000) -> int:
     """
@@ -1745,6 +1859,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Temporary Storage Queues")
     upsert_segmento(cursor, "Files")
     upsert_segmento(cursor, "Data Tables - Requests")
+    upsert_segmento(cursor, "Data Tables - Storage")
     upsert_segmento(cursor, "Transactions")
     upsert_segmento(cursor, "Storage - Domain Subpools")
     upsert_segmento(cursor, "Storage - Task Subpools")
@@ -1916,7 +2031,48 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 5) INSERTAR TRANSACTIONS
+    # 5) INSERTAR DATA TABLES - STORAGE
+    # =====================================================
+    data_tables_storage_payload = None
+
+    for k, v in diccionarioSegmentos.items():
+        if str(k).strip().lower() == "data tables - storage":
+            data_tables_storage_payload = v
+            break
+
+    data_tables_storage_rows = []
+
+    if isinstance(data_tables_storage_payload, dict):
+
+        if data_tables_storage_payload.get("tipo") == "tabla":
+            detalles = data_tables_storage_payload.get("detalles") or {}
+            data_tables_storage_rows = detalles.get("filas") or []
+
+        elif "filas" in data_tables_storage_payload:
+            data_tables_storage_rows = data_tables_storage_payload.get("filas") or []
+
+    inserted_data_tables_storage = 0
+
+    if isinstance(data_tables_storage_rows, list) and data_tables_storage_rows:
+
+        rows_to_insert = (
+            data_tables_storage_rows[:cantidadRegistroPrueba]
+            if boolPrueba
+            else data_tables_storage_rows
+        )
+
+        inserted_data_tables_storage = insert_data_tables_storage_rows(
+            cursor,
+            archivo_id,
+            fechaActual,
+            rows_to_insert,
+            batch_size=1000
+        )
+
+        conn.commit()
+
+    # =====================================================
+    # 6) INSERTAR TRANSACTIONS
     # =====================================================
     tx_payload = None
 
@@ -1955,7 +2111,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 6) INSERTAR STORAGE DOMAIN SUBPOOLS
+    # 7) INSERTAR STORAGE DOMAIN SUBPOOLS
     # =====================================================
     storage_domain_payload = None
 
@@ -1996,7 +2152,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 7) INSERTAR STORAGE TASK SUBPOOLS
+    # 8) INSERTAR STORAGE TASK SUBPOOLS
     # =====================================================
     storage_task_payload = None
 
@@ -2037,7 +2193,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 8) INSERTAR STORAGE PROGRAM SUBPOOLS
+    # 9) INSERTAR STORAGE PROGRAM SUBPOOLS
     # =====================================================
     storage_program_payload = None
 
@@ -2078,7 +2234,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 9) INSERTAR SYSTEM STATUS
+    # 10) INSERTAR SYSTEM STATUS
     # =====================================================
     system_status_payload = None
 
@@ -2111,7 +2267,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 10) INSERTAR TRANSACTION MANAGER
+    # 11) INSERTAR TRANSACTION MANAGER
     # =====================================================
     transaction_manager_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Transaction Manager")
 
@@ -2128,7 +2284,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 11) INSERTAR MONITORING
+    # 12) INSERTAR MONITORING
     # =====================================================
     monitoring_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Monitoring")
 
@@ -2145,7 +2301,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 12) INSERTAR STATISTICS
+    # 13) INSERTAR STATISTICS
     # =====================================================
     statistics_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Statistics")
 
@@ -2162,7 +2318,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 13) INSERTAR TRACE STATUS
+    # 14) INSERTAR TRACE STATUS
     # =====================================================
     trace_status_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Trace Status")
 
@@ -2184,6 +2340,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Temporary Storage Queues insertadas: {inserted_tsq} | "
         f"Files insertados: {inserted_files} | "
         f"Data Tables - Requests insertadas: {inserted_data_tables_requests} | "
+        f"Data Tables - Storage insertadas: {inserted_data_tables_storage} | "
         f"Transactions insertadas: {inserted_tx} | "
         f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
         f"Storage Task Subpools insertados: {inserted_storage_task} | "
@@ -2841,6 +2998,23 @@ def get_data_tables_requests_forced_columns():
         "readRetries",
         "changeResponseLockWaits",
     ]
+
+
+def get_data_tables_storage_forced_columns():
+    return [
+        "filename",
+        "type",
+        "currentRecords",
+        "peakRecords",
+        "totalStorageAllocated",
+        "totalStorageInUse",
+        "entriesStorageAllocated",
+        "entriesStorageInUse",
+        "indexStorageAllocated",
+        "indexStorageInUse",
+        "dataStorageAllocated",
+        "dataStorageInUse",
+    ]
     
 
 
@@ -3119,6 +3293,77 @@ def parse_data_tables_requests_segment(lines, start_idx):
         }
 
         if not row["filename"] or row["filename"].lower() == "filename":
+            i += 1
+            continue
+
+        rows.append(row)
+        i += 1
+
+    return headers, rows, i
+
+
+def parse_data_tables_storage_segment(lines, start_idx):
+
+    headers = get_data_tables_storage_forced_columns()
+    rows = []
+    i = start_idx
+
+    while i < len(lines):
+
+        line = lines[i].rstrip("\n")
+
+        if reached_segment_boundary(line) or _is_totals_line(line):
+            break
+
+        if is_page_header(line):
+            i += 1
+            continue
+
+        if not line.strip():
+            i += 1
+            continue
+
+        low = line.lower()
+        if (
+            "total" in low
+            or "entries" in low
+            or "index" in low
+            or "data" in low
+            or "filename" in low
+            or "current" in low
+            or "allocated" in low
+            or "in-use" in low
+        ):
+            i += 1
+            continue
+
+        if re.match(r"^\s*\+", line):
+            i += 1
+            continue
+
+        line_clean = re.sub(r"^\s*0\s+", "", line).strip()
+        parts = re.split(r"\s{2,}", line_clean)
+
+        if len(parts) < 12:
+            i += 1
+            continue
+
+        row = {
+            "filename": parts[0].strip(),
+            "type": parts[1].strip(),
+            "currentRecords": parts[2].replace(",", "").strip(),
+            "peakRecords": parts[3].replace(",", "").strip(),
+            "totalStorageAllocated": parts[4].replace(",", "").strip(),
+            "totalStorageInUse": parts[5].replace(",", "").strip(),
+            "entriesStorageAllocated": parts[6].replace(",", "").strip(),
+            "entriesStorageInUse": parts[7].replace(",", "").strip(),
+            "indexStorageAllocated": parts[8].replace(",", "").strip(),
+            "indexStorageInUse": parts[9].replace(",", "").strip(),
+            "dataStorageAllocated": parts[10].replace(",", "").strip(),
+            "dataStorageInUse": parts[11].replace(",", "").strip(),
+        }
+
+        if not row["filename"] or row["filename"].lower() in {"filename", "totals"}:
             i += 1
             continue
 
@@ -3482,6 +3727,91 @@ def insert_data_tables_requests_rows(
 
     print(
         f"Data Tables - Requests: total_rows={total_rows}, inserted={inserted}, "
+        f"skipped_empty_name={skipped_empty_name}"
+    )
+
+    return inserted
+
+
+def insert_data_tables_storage_rows(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    rows: list[dict],
+    batch_size: int = 1000
+) -> int:
+
+    sql = """
+    INSERT INTO cics_data_tables_storage
+    (
+        archivo,
+        fecha,
+        fileName,
+        tableType,
+        currentRecords,
+        peakRecords,
+        totalStorageAllocated,
+        totalStorageInUse,
+        entriesStorageAllocated,
+        entriesStorageInUse,
+        indexStorageAllocated,
+        indexStorageInUse,
+        dataStorageAllocated,
+        dataStorageInUse
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    inserted = 0
+    total_rows = 0
+    skipped_empty_name = 0
+    batch = []
+
+    try:
+        cursor.fast_executemany = True
+    except Exception:
+        pass
+
+    for r in rows:
+
+        total_rows += 1
+
+        if not isinstance(r, dict):
+            continue
+
+        file_name = str(r.get("filename", "") or "").strip()
+        if not file_name:
+            skipped_empty_name += 1
+            continue
+
+        batch.append((
+            archivo_id,
+            fecha,
+            file_name,
+            str(r.get("type", "") or "").strip(),
+            to_int_or_none(r.get("currentRecords", "")),
+            to_int_or_none(r.get("peakRecords", "")),
+            to_int_or_none(r.get("totalStorageAllocated", "")),
+            to_int_or_none(r.get("totalStorageInUse", "")),
+            to_int_or_none(r.get("entriesStorageAllocated", "")),
+            to_int_or_none(r.get("entriesStorageInUse", "")),
+            to_int_or_none(r.get("indexStorageAllocated", "")),
+            to_int_or_none(r.get("indexStorageInUse", "")),
+            to_int_or_none(r.get("dataStorageAllocated", "")),
+            to_int_or_none(r.get("dataStorageInUse", "")),
+        ))
+
+        if len(batch) >= batch_size:
+            cursor.executemany(sql, batch)
+            inserted += len(batch)
+            batch.clear()
+
+    if batch:
+        cursor.executemany(sql, batch)
+        inserted += len(batch)
+
+    print(
+        f"Data Tables - Storage: total_rows={total_rows}, inserted={inserted}, "
         f"skipped_empty_name={skipped_empty_name}"
     )
 

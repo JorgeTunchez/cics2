@@ -287,6 +287,40 @@ def backfill_data_tables_requests_desde_json(directorio_salida_fecha: Path, fech
     print(f"Backfill de Data Tables - Requests completado. Registros insertados: {inserted_total}")
 
 
+def backfill_data_tables_storage_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+    """
+    Inserta Data Tables - Storage faltantes desde JSON ya generados.
+    """
+    if not directorio_salida_fecha.exists():
+        print("No existe carpeta de SALIDA para backfill de Data Tables - Storage.")
+        return
+
+    archivos_json = sorted(
+        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
+    )
+
+    if not archivos_json:
+        print("No hay archivos JSON para backfill de Data Tables - Storage.")
+        return
+
+    inserted_total = 0
+
+    for json_path in archivos_json:
+        nombre_archivo_json = json_path.name.upper()
+
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+            nombre_txt = nombre_archivo_json.replace(".JSON", ".TXT")
+            inserted = insertar_data_tables_storage_si_falta(fecha_actual, nombre_txt, data)
+            inserted_total += inserted
+
+        except Exception as e:
+            print(f"  [ERROR] Error backfilleando Data Tables - Storage desde {nombre_archivo_json}: {e}\n")
+            raise
+
+    print(f"Backfill de Data Tables - Storage completado. Registros insertados: {inserted_total}")
+
+
 def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
     """
     Procesa una carpeta de fecha:
@@ -309,6 +343,7 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
         backfill_trace_status_desde_json(directorio_salida_fecha, fecha_carpeta)
         backfill_transaction_manager_desde_json(directorio_salida_fecha, fecha_carpeta)
         backfill_data_tables_requests_desde_json(directorio_salida_fecha, fecha_carpeta)
+        backfill_data_tables_storage_desde_json(directorio_salida_fecha, fecha_carpeta)
         backfill_storage_task_subpool_desde_json(directorio_salida_fecha, fecha_carpeta)
         backfill_storage_program_subpool_desde_json(directorio_salida_fecha, fecha_carpeta)
         return
@@ -337,6 +372,7 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
         backfill_trace_status_desde_json(directorio_salida_fecha, fecha_encabezado)
         backfill_transaction_manager_desde_json(directorio_salida_fecha, fecha_encabezado)
         backfill_data_tables_requests_desde_json(directorio_salida_fecha, fecha_encabezado)
+        backfill_data_tables_storage_desde_json(directorio_salida_fecha, fecha_encabezado)
         backfill_storage_task_subpool_desde_json(directorio_salida_fecha, fecha_encabezado)
         backfill_storage_program_subpool_desde_json(directorio_salida_fecha, fecha_encabezado)
         return
