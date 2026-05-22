@@ -716,6 +716,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "temporary storage queues",
             "files",
             "transactions",
+            "transaction manager",
             "storage - domain subpools",
             "system status",
             "monitoring",
@@ -909,6 +910,29 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
                 i = j
                 continue
 
+            # Transaction Manager
+            elif title_key == "transaction manager":
+                columnas, data, next_j = parse_transaction_manager_segment(lines, j)
+
+                key = unique_title(title, out)
+
+                out[key] = {
+                    "nombre": title,
+                    "tipo": "informacion",
+                    "detalles": {
+                        "columnas": columnas,
+                        "datos": data
+                    }
+                }
+
+                j = next_j
+
+                while j < len(lines) and not reached_segment_boundary(lines[j]) and not _is_totals_line(lines[j]):
+                    j += 1
+
+                i = j
+                continue
+
             # fallback
             else:
                 columnas, filas, next_j = parse_table_segment(lines, j, title)
@@ -986,6 +1010,7 @@ _REQUIRED_TABLES = {
     "cics_temporary_storage_queues",
     "cics_files",
     "cics_system_status",
+    "cics_transaction_manager",
     "cics_monitoring",
     "cics_statistics",
     "cics_trace_status",
@@ -1007,6 +1032,7 @@ def validar_tablas_requeridas(cursor) -> None:
                         'cics_temporary_storage_queues',
                         'cics_files',
                         'cics_system_status',
+                        'cics_transaction_manager',
                         'cics_monitoring',
                         'cics_statistics',
                         'cics_trace_status',
@@ -1084,6 +1110,14 @@ def existe_statistics(cursor, archivo_id: int, fecha: str) -> bool:
 def existe_trace_status(cursor, archivo_id: int, fecha: str) -> bool:
     cursor.execute(
         "SELECT 1 FROM cics_trace_status WHERE archivo = ? AND fecha = ?",
+        (archivo_id, fecha),
+    )
+    return cursor.fetchone() is not None
+
+
+def existe_transaction_manager(cursor, archivo_id: int, fecha: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM cics_transaction_manager WHERE archivo = ? AND fecha = ?",
         (archivo_id, fecha),
     )
     return cursor.fetchone() is not None
@@ -1180,6 +1214,37 @@ def insertar_trace_status_si_falta(fecha_actual: str, nombre_archivo: str, dicci
 
     except Exception as e:
         print(f"insertar_trace_status_si_falta: error - {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def insertar_transaction_manager_si_falta(fecha_actual: str, nombre_archivo: str, diccionario_segmentos: dict) -> int:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    try:
+        validar_tablas_requeridas(cursor)
+        archivo_nombre = nombre_archivo.replace(".TXT", "").replace(".JSON", "").strip().upper()
+        archivo_id = upsert_archivo(cursor, archivo_nombre)
+        conn.commit()
+
+        transaction_manager_data = extraer_datos_segmento_informacion(diccionario_segmentos, "Transaction Manager")
+        if not isinstance(transaction_manager_data, dict) or not transaction_manager_data:
+            print(f"Transaction Manager: no hay datos para {archivo_nombre} fecha={fecha_actual}")
+            return 0
+
+        if existe_transaction_manager(cursor, archivo_id, fecha_actual):
+            updated = update_transaction_manager_row(cursor, archivo_id, fecha_actual, transaction_manager_data)
+            conn.commit()
+            return updated
+
+        inserted = insert_transaction_manager_row(cursor, archivo_id, fecha_actual, transaction_manager_data)
+        conn.commit()
+        return inserted
+
+    except Exception as e:
+        print(f"insertar_transaction_manager_si_falta: error - {e}")
         return 0
     finally:
         conn.close()
@@ -1406,6 +1471,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Transactions")
     upsert_segmento(cursor, "Storage - Domain Subpools")
     upsert_segmento(cursor, "System Status")
+    upsert_segmento(cursor, "Transaction Manager")
     upsert_segmento(cursor, "Monitoring")
     upsert_segmento(cursor, "Statistics")
     upsert_segmento(cursor, "Trace Status")
@@ -1643,7 +1709,24 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 7) INSERTAR MONITORING
+    # 7) INSERTAR TRANSACTION MANAGER
+    # =====================================================
+    transaction_manager_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Transaction Manager")
+
+    inserted_transaction_manager = 0
+
+    if isinstance(transaction_manager_data, dict) and transaction_manager_data:
+        inserted_transaction_manager = insert_transaction_manager_row(
+            cursor,
+            archivo_id,
+            fechaActual,
+            transaction_manager_data
+        )
+
+        conn.commit()
+
+    # =====================================================
+    # 8) INSERTAR MONITORING
     # =====================================================
     monitoring_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Monitoring")
 
@@ -1660,7 +1743,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 8) INSERTAR STATISTICS
+    # 9) INSERTAR STATISTICS
     # =====================================================
     statistics_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Statistics")
 
@@ -1677,7 +1760,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 9) INSERTAR TRACE STATUS
+    # 10) INSERTAR TRACE STATUS
     # =====================================================
     trace_status_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Trace Status")
 
@@ -1701,6 +1784,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Transactions insertadas: {inserted_tx} | "
         f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
         f"System Status insertado: {inserted_system_status} | "
+        f"Transaction Manager insertado: {inserted_transaction_manager} | "
         f"Monitoring insertado: {inserted_monitoring} | "
         f"Statistics insertado: {inserted_statistics} | "
         f"Trace Status insertado: {inserted_trace_status}"
@@ -2805,27 +2889,33 @@ def parse_trace_status_segment(lines: list[str], start_idx: int) -> tuple[list[s
             continue
 
         line_clean = re.sub(r"^\s*0\s+", "", line)
-        split_result = split_two_columns(line_clean)
-        columns = [split_result[0], split_result[1]] if split_result else [line_clean]
+        # En este segmento, split_two_columns puede cortar antes del valor numérico
+        # (ej. "Maximum transactions allowed (MXT) : 450 ..."), por eso parseamos
+        # la línea completa y extraemos pares key:value con regex.
+        columns = [line_clean]
 
         for col_text in columns:
-            if not col_text or not col_text.strip() or ":" not in col_text:
+            if not col_text or not col_text.strip():
                 continue
 
-            label_raw, value_raw = col_text.split(":", 1)
-            label = re.sub(r"\.+", " ", label_raw).strip().lower()
-            label = re.sub(r"\s+", " ", label)
+            matches = re.findall(
+                r"([^:]+?):\s*(.*?)(?=\s{2,}[A-Za-z][^:]{2,}:\s|$)",
+                col_text
+            )
 
-            value = value_raw.strip()
+            for label_raw, value_raw in matches:
+                label = re.sub(r"\.+", " ", label_raw).strip().lower()
+                label = re.sub(r"\s+", " ", label)
+                value = value_raw.strip()
 
-            if not label or not value:
-                continue
+                if not label or not value:
+                    continue
 
-            for pattern_key, column_name in field_mapping.items():
-                if pattern_key in label:
-                    if data[column_name] == "":
-                        data[column_name] = value
-                    break
+                for pattern_key, column_name in field_mapping.items():
+                    if pattern_key in label:
+                        if data[column_name] == "":
+                            data[column_name] = value
+                        break
 
         i += 1
 
@@ -2901,6 +2991,319 @@ def insert_trace_status_row(
         return 1
     except Exception as e:
         print(f"Trace Status + Dumps: error al insertar - {e}")
+        return 0
+
+
+# =====================================================
+# TRANSACTION MANAGER
+# =====================================================
+
+def get_transaction_manager_forced_columns() -> list[str]:
+    return [
+        "totalAccumulatedTransactionsSoFar",
+        "accumulatedTransactionsSinceReset",
+        "transactionRatePerSecond",
+        "maximumTransactionsAllowedMxt",
+        "timeMxtLastChanged",
+        "timesAtMxt",
+        "timeMxtLastReached",
+        "currentActiveUserTransactions",
+        "currentlyAtMxt",
+        "peakActiveUserTransactions",
+        "totalActiveUserTransactions",
+        "timeLastTransactionAttached",
+        "currentRunningTransactions",
+        "currentDispatchableTransactions",
+        "currentSuspendedTransactions",
+        "currentSystemTransactions",
+        "transactionsDelayedByMxt",
+        "totalMxtQueueingTime",
+        "averageMxtQueueingTime",
+        "currentQueuedUserTransactions",
+        "peakQueuedUserTransactions",
+        "totalQueueingTimeForCurrentQueued",
+        "averageQueueingTimeForCurrentQueued",
+    ]
+
+
+def parse_transaction_manager_segment(lines: list[str], start_idx: int) -> tuple[list[str], dict, int]:
+    """
+    Parsea el segmento Transaction Manager (dos columnas con KV).
+    Retorna: (columnas, diccionario_datos, índice_siguiente)
+    """
+    headers = get_transaction_manager_forced_columns()
+    data = {h: "" for h in headers}
+
+    field_mapping = {
+        "total accumulated transactions so far": "totalAccumulatedTransactionsSoFar",
+        "accumulated transactions (since reset)": "accumulatedTransactionsSinceReset",
+        "transaction rate per second": "transactionRatePerSecond",
+        "maximum transactions allowed (mxt)": "maximumTransactionsAllowedMxt",
+        "time mxt last changed": "timeMxtLastChanged",
+        "times at mxt": "timesAtMxt",
+        "time mxt last reached": "timeMxtLastReached",
+        "current active user transactions": "currentActiveUserTransactions",
+        "currently at mxt": "currentlyAtMxt",
+        "peak active user transactions": "peakActiveUserTransactions",
+        "total active user transactions": "totalActiveUserTransactions",
+        "time last transaction attached": "timeLastTransactionAttached",
+        "current running transactions": "currentRunningTransactions",
+        "current dispatchable transactions": "currentDispatchableTransactions",
+        "current suspended transactions": "currentSuspendedTransactions",
+        "current system transactions": "currentSystemTransactions",
+        "transactions delayed by mxt": "transactionsDelayedByMxt",
+        "total mxt queueing time": "totalMxtQueueingTime",
+        "average mxt queueing time": "averageMxtQueueingTime",
+        "current queued user transactions": "currentQueuedUserTransactions",
+        "peak queued user transactions": "peakQueuedUserTransactions",
+        "total queueing time for current queued": "totalQueueingTimeForCurrentQueued",
+        "average queueing time for current queued": "averageQueueingTimeForCurrentQueued",
+    }
+
+    i = start_idx
+    while i < len(lines):
+        line = lines[i]
+
+        if line.strip().startswith("0----") or line.strip().startswith("+_"):
+            break
+
+        if not line.strip() or line.strip().startswith("Applid"):
+            i += 1
+            continue
+
+        line_clean = re.sub(r"^\s*0\s+", "", line)
+        # En Transaction Manager conviene parsear la línea completa:
+        # split_two_columns puede cortar columnas justo antes de valores.
+        columns = [line_clean]
+
+        for col_text in columns:
+            if not col_text or not col_text.strip():
+                continue
+
+            # Extraer uno o más pares key:value en la misma columna/línea.
+            # Evita que el valor de la izquierda arrastre el key de la derecha.
+            matches = re.findall(
+                r"([^:]+?):\s*(.*?)(?=\s{2,}[A-Za-z][^:]{2,}:\s|$)",
+                col_text
+            )
+
+            for label_raw, value_raw in matches:
+                label = re.sub(r"\.+", " ", label_raw).strip().lower()
+                label = re.sub(r"\s+", " ", label)
+                value = value_raw.strip()
+
+                if not label or value == "":
+                    continue
+
+                for pattern_key, column_name in field_mapping.items():
+                    if pattern_key in label:
+                        if data[column_name] == "":
+                            data[column_name] = value
+                        break
+
+        i += 1
+
+    return headers, data, i
+
+
+def insert_transaction_manager_row(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    data: dict
+) -> int:
+    sql = """
+    INSERT INTO cics_transaction_manager
+    (
+        archivo,
+        fecha,
+        totalAccumulatedTransactionsSoFar,
+        accumulatedTransactionsSinceReset,
+        transactionRatePerSecond,
+        maximumTransactionsAllowedMxt,
+        timeMxtLastChanged,
+        timesAtMxt,
+        timeMxtLastReached,
+        currentActiveUserTransactions,
+        currentlyAtMxt,
+        peakActiveUserTransactions,
+        totalActiveUserTransactions,
+        timeLastTransactionAttached,
+        currentRunningTransactions,
+        currentDispatchableTransactions,
+        currentSuspendedTransactions,
+        currentSystemTransactions,
+        transactionsDelayedByMxt,
+        totalMxtQueueingTime,
+        averageMxtQueueingTime,
+        currentQueuedUserTransactions,
+        peakQueuedUserTransactions,
+        totalQueueingTimeForCurrentQueued,
+        averageQueueingTimeForCurrentQueued
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    if not isinstance(data, dict):
+        print("Transaction Manager: data no es diccionario, se omite")
+        return 0
+
+    totalAccumulatedTransactionsSoFar = to_int_or_none(data.get("totalAccumulatedTransactionsSoFar", ""))
+    accumulatedTransactionsSinceReset = to_int_or_none(data.get("accumulatedTransactionsSinceReset", ""))
+    transactionRatePerSecond = to_float_or_none(data.get("transactionRatePerSecond", ""))
+    maximumTransactionsAllowedMxt = to_int_or_none(data.get("maximumTransactionsAllowedMxt", ""))
+    timeMxtLastChanged = to_sqlserver_datetime_string(data.get("timeMxtLastChanged", ""))
+    timesAtMxt = to_int_or_none(data.get("timesAtMxt", ""))
+    timeMxtLastReached = to_sqlserver_datetime_string(data.get("timeMxtLastReached", ""))
+    currentActiveUserTransactions = to_int_or_none(data.get("currentActiveUserTransactions", ""))
+    currentlyAtMxt = str(data.get("currentlyAtMxt", "") or "").strip()
+    peakActiveUserTransactions = to_int_or_none(data.get("peakActiveUserTransactions", ""))
+    totalActiveUserTransactions = to_int_or_none(data.get("totalActiveUserTransactions", ""))
+    timeLastTransactionAttached = to_sqlserver_datetime_string(data.get("timeLastTransactionAttached", ""))
+    currentRunningTransactions = to_int_or_none(data.get("currentRunningTransactions", ""))
+    currentDispatchableTransactions = to_int_or_none(data.get("currentDispatchableTransactions", ""))
+    currentSuspendedTransactions = to_int_or_none(data.get("currentSuspendedTransactions", ""))
+    currentSystemTransactions = to_int_or_none(data.get("currentSystemTransactions", ""))
+    transactionsDelayedByMxt = to_int_or_none(data.get("transactionsDelayedByMxt", ""))
+    totalMxtQueueingTime = to_nonempty_string_or_none(data.get("totalMxtQueueingTime", ""))
+    averageMxtQueueingTime = to_nonempty_string_or_none(data.get("averageMxtQueueingTime", ""))
+    currentQueuedUserTransactions = to_int_or_none(data.get("currentQueuedUserTransactions", ""))
+    peakQueuedUserTransactions = to_int_or_none(data.get("peakQueuedUserTransactions", ""))
+    totalQueueingTimeForCurrentQueued = to_nonempty_string_or_none(data.get("totalQueueingTimeForCurrentQueued", ""))
+    averageQueueingTimeForCurrentQueued = to_nonempty_string_or_none(data.get("averageQueueingTimeForCurrentQueued", ""))
+
+    try:
+        cursor.execute(sql, (
+            archivo_id,
+            fecha,
+            totalAccumulatedTransactionsSoFar,
+            accumulatedTransactionsSinceReset,
+            transactionRatePerSecond,
+            maximumTransactionsAllowedMxt,
+            timeMxtLastChanged,
+            timesAtMxt,
+            timeMxtLastReached,
+            currentActiveUserTransactions,
+            currentlyAtMxt,
+            peakActiveUserTransactions,
+            totalActiveUserTransactions,
+            timeLastTransactionAttached,
+            currentRunningTransactions,
+            currentDispatchableTransactions,
+            currentSuspendedTransactions,
+            currentSystemTransactions,
+            transactionsDelayedByMxt,
+            totalMxtQueueingTime,
+            averageMxtQueueingTime,
+            currentQueuedUserTransactions,
+            peakQueuedUserTransactions,
+            totalQueueingTimeForCurrentQueued,
+            averageQueueingTimeForCurrentQueued,
+        ))
+
+        print("Transaction Manager: registro insertado correctamente")
+        return 1
+
+    except Exception as e:
+        print(f"Transaction Manager: error al insertar - {e}")
+        return 0
+
+
+def update_transaction_manager_row(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    data: dict
+) -> int:
+    sql = """
+    UPDATE cics_transaction_manager
+    SET
+        totalAccumulatedTransactionsSoFar = ?,
+        accumulatedTransactionsSinceReset = ?,
+        transactionRatePerSecond = ?,
+        maximumTransactionsAllowedMxt = ?,
+        timeMxtLastChanged = ?,
+        timesAtMxt = ?,
+        timeMxtLastReached = ?,
+        currentActiveUserTransactions = ?,
+        currentlyAtMxt = ?,
+        peakActiveUserTransactions = ?,
+        totalActiveUserTransactions = ?,
+        timeLastTransactionAttached = ?,
+        currentRunningTransactions = ?,
+        currentDispatchableTransactions = ?,
+        currentSuspendedTransactions = ?,
+        currentSystemTransactions = ?,
+        transactionsDelayedByMxt = ?,
+        totalMxtQueueingTime = ?,
+        averageMxtQueueingTime = ?,
+        currentQueuedUserTransactions = ?,
+        peakQueuedUserTransactions = ?,
+        totalQueueingTimeForCurrentQueued = ?,
+        averageQueueingTimeForCurrentQueued = ?
+    WHERE archivo = ? AND fecha = ?
+    """
+
+    if not isinstance(data, dict):
+        print("Transaction Manager: data no es diccionario para update, se omite")
+        return 0
+
+    totalAccumulatedTransactionsSoFar = to_int_or_none(data.get("totalAccumulatedTransactionsSoFar", ""))
+    accumulatedTransactionsSinceReset = to_int_or_none(data.get("accumulatedTransactionsSinceReset", ""))
+    transactionRatePerSecond = to_float_or_none(data.get("transactionRatePerSecond", ""))
+    maximumTransactionsAllowedMxt = to_int_or_none(data.get("maximumTransactionsAllowedMxt", ""))
+    timeMxtLastChanged = to_sqlserver_datetime_string(data.get("timeMxtLastChanged", ""))
+    timesAtMxt = to_int_or_none(data.get("timesAtMxt", ""))
+    timeMxtLastReached = to_sqlserver_datetime_string(data.get("timeMxtLastReached", ""))
+    currentActiveUserTransactions = to_int_or_none(data.get("currentActiveUserTransactions", ""))
+    currentlyAtMxt = str(data.get("currentlyAtMxt", "") or "").strip()
+    peakActiveUserTransactions = to_int_or_none(data.get("peakActiveUserTransactions", ""))
+    totalActiveUserTransactions = to_int_or_none(data.get("totalActiveUserTransactions", ""))
+    timeLastTransactionAttached = to_sqlserver_datetime_string(data.get("timeLastTransactionAttached", ""))
+    currentRunningTransactions = to_int_or_none(data.get("currentRunningTransactions", ""))
+    currentDispatchableTransactions = to_int_or_none(data.get("currentDispatchableTransactions", ""))
+    currentSuspendedTransactions = to_int_or_none(data.get("currentSuspendedTransactions", ""))
+    currentSystemTransactions = to_int_or_none(data.get("currentSystemTransactions", ""))
+    transactionsDelayedByMxt = to_int_or_none(data.get("transactionsDelayedByMxt", ""))
+    totalMxtQueueingTime = to_nonempty_string_or_none(data.get("totalMxtQueueingTime", ""))
+    averageMxtQueueingTime = to_nonempty_string_or_none(data.get("averageMxtQueueingTime", ""))
+    currentQueuedUserTransactions = to_int_or_none(data.get("currentQueuedUserTransactions", ""))
+    peakQueuedUserTransactions = to_int_or_none(data.get("peakQueuedUserTransactions", ""))
+    totalQueueingTimeForCurrentQueued = to_nonempty_string_or_none(data.get("totalQueueingTimeForCurrentQueued", ""))
+    averageQueueingTimeForCurrentQueued = to_nonempty_string_or_none(data.get("averageQueueingTimeForCurrentQueued", ""))
+
+    try:
+        cursor.execute(sql, (
+            totalAccumulatedTransactionsSoFar,
+            accumulatedTransactionsSinceReset,
+            transactionRatePerSecond,
+            maximumTransactionsAllowedMxt,
+            timeMxtLastChanged,
+            timesAtMxt,
+            timeMxtLastReached,
+            currentActiveUserTransactions,
+            currentlyAtMxt,
+            peakActiveUserTransactions,
+            totalActiveUserTransactions,
+            timeLastTransactionAttached,
+            currentRunningTransactions,
+            currentDispatchableTransactions,
+            currentSuspendedTransactions,
+            currentSystemTransactions,
+            transactionsDelayedByMxt,
+            totalMxtQueueingTime,
+            averageMxtQueueingTime,
+            currentQueuedUserTransactions,
+            peakQueuedUserTransactions,
+            totalQueueingTimeForCurrentQueued,
+            averageQueueingTimeForCurrentQueued,
+            archivo_id,
+            fecha,
+        ))
+        print("Transaction Manager: registro actualizado correctamente")
+        return 1
+    except Exception as e:
+        print(f"Transaction Manager: error al actualizar - {e}")
         return 0
 
 

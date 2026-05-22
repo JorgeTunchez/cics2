@@ -21,6 +21,10 @@ IF OBJECT_ID('dbo.cics_system_status', 'U') IS NOT NULL
     DROP TABLE dbo.cics_system_status;
 GO
 
+IF OBJECT_ID('dbo.cics_transaction_manager', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_transaction_manager;
+GO
+
 IF OBJECT_ID('dbo.cics_storage_domain_subpool', 'U') IS NOT NULL
     DROP TABLE dbo.cics_storage_domain_subpool;
 GO
@@ -371,6 +375,58 @@ GO
 
 ALTER TABLE dbo.cics_system_status
 ADD CONSTRAINT FK_cics_system_status_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+/* =========================================
+   TABLA: cics_transaction_manager
+   Un registro por archivo y fecha
+   ========================================= */
+IF OBJECT_ID('dbo.cics_transaction_manager', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_transaction_manager;
+GO
+
+CREATE TABLE dbo.cics_transaction_manager
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+
+    totalAccumulatedTransactionsSoFar BIGINT NULL,
+    accumulatedTransactionsSinceReset BIGINT NULL,
+    transactionRatePerSecond DECIMAL(10,2) NULL,
+    maximumTransactionsAllowedMxt INT NULL,
+    timeMxtLastChanged DATETIME NULL,
+    timesAtMxt BIGINT NULL,
+    timeMxtLastReached DATETIME NULL,
+    currentActiveUserTransactions INT NULL,
+    currentlyAtMxt NVARCHAR(20) NULL,
+    peakActiveUserTransactions INT NULL,
+    totalActiveUserTransactions BIGINT NULL,
+    timeLastTransactionAttached DATETIME NULL,
+    currentRunningTransactions INT NULL,
+    currentDispatchableTransactions INT NULL,
+    currentSuspendedTransactions INT NULL,
+    currentSystemTransactions INT NULL,
+    transactionsDelayedByMxt INT NULL,
+    totalMxtQueueingTime NVARCHAR(30) NULL,
+    averageMxtQueueingTime NVARCHAR(30) NULL,
+    currentQueuedUserTransactions INT NULL,
+    peakQueuedUserTransactions INT NULL,
+    totalQueueingTimeForCurrentQueued NVARCHAR(30) NULL,
+    averageQueueingTimeForCurrentQueued NVARCHAR(30) NULL,
+
+    CONSTRAINT UX_cics_transaction_manager_archivo_fecha UNIQUE (archivo, fecha)
+);
+GO
+
+CREATE INDEX IX_cics_transaction_manager_archivo_fecha
+ON dbo.cics_transaction_manager(archivo, fecha);
+GO
+
+ALTER TABLE dbo.cics_transaction_manager
+ADD CONSTRAINT FK_cics_transaction_manager_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 
