@@ -21,6 +21,10 @@ IF OBJECT_ID('dbo.cics_system_status', 'U') IS NOT NULL
     DROP TABLE dbo.cics_system_status;
 GO
 
+IF OBJECT_ID('dbo.cics_dispatcher', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_dispatcher;
+GO
+
 IF OBJECT_ID('dbo.cics_storage_program_subpool', 'U') IS NOT NULL
     DROP TABLE dbo.cics_storage_program_subpool;
 GO
@@ -495,6 +499,52 @@ GO
 
 ALTER TABLE dbo.cics_storage_task_subpool
 ADD CONSTRAINT FK_cics_storage_task_subpool_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+/* =========================================
+   TABLA: cics_dispatcher
+   Un registro por archivo y fecha
+   ========================================= */
+IF OBJECT_ID('dbo.cics_dispatcher', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_dispatcher;
+GO
+
+CREATE TABLE dbo.cics_dispatcher
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    currentIcvTime NVARCHAR(30) NULL,
+    currentIcvrTime NVARCHAR(30) NULL,
+    currentIcvtsdTime NVARCHAR(30) NULL,
+    currentPrtyagingTime NVARCHAR(30) NULL,
+    mroQrBatchingValue INT NULL,
+    concurrentSubtaskingValue INT NULL,
+    currentDispatcherTasks INT NULL,
+    peakDispatcherTasks INT NULL,
+    currentTcbsAttached INT NULL,
+    currentTcbsInUse INT NULL,
+    lastExcessTcbScan NVARCHAR(60) NULL,
+    numberOfExcessTcbScans INT NULL,
+    lastExcessTcbScanNoTcbDetached NVARCHAR(60) NULL,
+    excessTcbScansNoTcbDetached INT NULL,
+    numberOfExcessTcbsDetached INT NULL,
+    averageExcessTcbsDetachedPerScan DECIMAL(18,4) NULL,
+    numberOfCicsTcbModes INT NULL,
+    numberOfCicsTcbPools INT NULL,
+
+    CONSTRAINT UX_cics_dispatcher_archivo_fecha UNIQUE (archivo, fecha)
+);
+GO
+
+CREATE INDEX IX_cics_dispatcher_archivo_fecha
+ON dbo.cics_dispatcher(archivo, fecha);
+GO
+
+ALTER TABLE dbo.cics_dispatcher
+ADD CONSTRAINT FK_cics_dispatcher_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 

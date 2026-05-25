@@ -718,6 +718,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "data tables - requests",
             "data tables - storage",
             "transactions",
+            "dispatcher",
             "transaction manager",
             "storage - domain subpools",
             "storage - task subpools",
@@ -907,6 +908,29 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             # Transactions
             elif title_key == "transactions":
                 columnas, filas, next_j = parse_table_segment(lines, j, title)
+
+            # Dispatcher
+            elif title_key == "dispatcher":
+                columnas, data, next_j = parse_dispatcher_segment(lines, j)
+
+                key = unique_title(title, out)
+
+                out[key] = {
+                    "nombre": title,
+                    "tipo": "informacion",
+                    "detalles": {
+                        "columnas": columnas,
+                        "datos": data
+                    }
+                }
+
+                j = next_j
+
+                while j < len(lines) and not reached_segment_boundary(lines[j]) and not _is_totals_line(lines[j]):
+                    j += 1
+
+                i = j
+                continue
                 
             
             # Storage - Domain Subpools
@@ -1193,6 +1217,7 @@ _REQUIRED_TABLES = {
     "cics_data_tables_storage",
     "cics_temporary_storage_queues",
     "cics_files",
+    "cics_dispatcher",
     "cics_system_status",
     "cics_transaction_manager",
     "cics_storage_task_subpool",
@@ -1219,6 +1244,7 @@ def validar_tablas_requeridas(cursor) -> None:
                         'cics_data_tables_storage',
                         'cics_temporary_storage_queues',
                         'cics_files',
+                        'cics_dispatcher',
                         'cics_system_status',
                         'cics_transaction_manager',
                         'cics_storage_task_subpool',
@@ -1348,6 +1374,14 @@ def existe_data_tables_requests(cursor, archivo_id: int, fecha: str) -> bool:
 def existe_data_tables_storage(cursor, archivo_id: int, fecha: str) -> bool:
     cursor.execute(
         "SELECT 1 FROM cics_data_tables_storage WHERE archivo = ? AND fecha = ?",
+        (archivo_id, fecha),
+    )
+    return cursor.fetchone() is not None
+
+
+def existe_dispatcher(cursor, archivo_id: int, fecha: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM cics_dispatcher WHERE archivo = ? AND fecha = ?",
         (archivo_id, fecha),
     )
     return cursor.fetchone() is not None
@@ -1640,6 +1674,36 @@ def insertar_data_tables_storage_si_falta(fecha_actual: str, nombre_archivo: str
         conn.close()
 
 
+def insertar_dispatcher_si_falta(fecha_actual: str, nombre_archivo: str, diccionario_segmentos: dict) -> int:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    try:
+        validar_tablas_requeridas(cursor)
+        archivo_nombre = nombre_archivo.replace(".TXT", "").replace(".JSON", "").strip().upper()
+        archivo_id = upsert_archivo(cursor, archivo_nombre)
+        conn.commit()
+
+        if existe_dispatcher(cursor, archivo_id, fecha_actual):
+            print(f"Dispatcher ya existe para {archivo_nombre} fecha={fecha_actual}, se omite.")
+            return 0
+
+        dispatcher_data = extraer_datos_segmento_informacion(diccionario_segmentos, "Dispatcher")
+        if not isinstance(dispatcher_data, dict) or not dispatcher_data:
+            print(f"Dispatcher: no hay datos para {archivo_nombre} fecha={fecha_actual}")
+            return 0
+
+        inserted = insert_dispatcher_row(cursor, archivo_id, fecha_actual, dispatcher_data)
+        conn.commit()
+        return inserted
+
+    except Exception as e:
+        print(f"insertar_dispatcher_si_falta: error - {e}")
+        return 0
+    finally:
+        conn.close()
+
+
 # Inserta filas del segmento Programs en cics_programs usando executemany por lotes
 def insert_programs_rows(cursor, archivo_id: int, fecha: str, rows: list[dict], batch_size: int = 1000) -> int:
     """
@@ -1861,6 +1925,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Data Tables - Requests")
     upsert_segmento(cursor, "Data Tables - Storage")
     upsert_segmento(cursor, "Transactions")
+    upsert_segmento(cursor, "Dispatcher")
     upsert_segmento(cursor, "Storage - Domain Subpools")
     upsert_segmento(cursor, "Storage - Task Subpools")
     upsert_segmento(cursor, "Storage - Program Subpools")
@@ -2072,7 +2137,24 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 6) INSERTAR TRANSACTIONS
+    # 6) INSERTAR DISPATCHER
+    # =====================================================
+    dispatcher_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Dispatcher")
+
+    inserted_dispatcher = 0
+
+    if isinstance(dispatcher_data, dict) and dispatcher_data:
+        inserted_dispatcher = insert_dispatcher_row(
+            cursor,
+            archivo_id,
+            fechaActual,
+            dispatcher_data
+        )
+
+        conn.commit()
+
+    # =====================================================
+    # 7) INSERTAR TRANSACTIONS
     # =====================================================
     tx_payload = None
 
@@ -2111,7 +2193,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 7) INSERTAR STORAGE DOMAIN SUBPOOLS
+    # 8) INSERTAR STORAGE DOMAIN SUBPOOLS
     # =====================================================
     storage_domain_payload = None
 
@@ -2152,7 +2234,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 8) INSERTAR STORAGE TASK SUBPOOLS
+    # 9) INSERTAR STORAGE TASK SUBPOOLS
     # =====================================================
     storage_task_payload = None
 
@@ -2193,7 +2275,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 9) INSERTAR STORAGE PROGRAM SUBPOOLS
+    # 10) INSERTAR STORAGE PROGRAM SUBPOOLS
     # =====================================================
     storage_program_payload = None
 
@@ -2234,7 +2316,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 10) INSERTAR SYSTEM STATUS
+    # 11) INSERTAR SYSTEM STATUS
     # =====================================================
     system_status_payload = None
 
@@ -2267,7 +2349,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 11) INSERTAR TRANSACTION MANAGER
+    # 12) INSERTAR TRANSACTION MANAGER
     # =====================================================
     transaction_manager_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Transaction Manager")
 
@@ -2284,7 +2366,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 12) INSERTAR MONITORING
+    # 13) INSERTAR MONITORING
     # =====================================================
     monitoring_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Monitoring")
 
@@ -2301,7 +2383,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 13) INSERTAR STATISTICS
+    # 14) INSERTAR STATISTICS
     # =====================================================
     statistics_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Statistics")
 
@@ -2318,7 +2400,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         conn.commit()
 
     # =====================================================
-    # 14) INSERTAR TRACE STATUS
+    # 15) INSERTAR TRACE STATUS
     # =====================================================
     trace_status_data = extraer_datos_segmento_informacion(diccionarioSegmentos, "Trace Status")
 
@@ -2341,6 +2423,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Files insertados: {inserted_files} | "
         f"Data Tables - Requests insertadas: {inserted_data_tables_requests} | "
         f"Data Tables - Storage insertadas: {inserted_data_tables_storage} | "
+        f"Dispatcher insertado: {inserted_dispatcher} | "
         f"Transactions insertadas: {inserted_tx} | "
         f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
         f"Storage Task Subpools insertados: {inserted_storage_task} | "
@@ -3015,6 +3098,29 @@ def get_data_tables_storage_forced_columns():
         "dataStorageAllocated",
         "dataStorageInUse",
     ]
+
+
+def get_dispatcher_forced_columns() -> list[str]:
+    return [
+        "currentIcvTime",
+        "currentIcvrTime",
+        "currentIcvtsdTime",
+        "currentPrtyagingTime",
+        "mroQrBatchingValue",
+        "concurrentSubtaskingValue",
+        "currentDispatcherTasks",
+        "peakDispatcherTasks",
+        "currentTcbsAttached",
+        "currentTcbsInUse",
+        "lastExcessTcbScan",
+        "numberOfExcessTcbScans",
+        "lastExcessTcbScanNoTcbDetached",
+        "excessTcbScansNoTcbDetached",
+        "numberOfExcessTcbsDetached",
+        "averageExcessTcbsDetachedPerScan",
+        "numberOfCicsTcbModes",
+        "numberOfCicsTcbPools",
+    ]
     
 
 
@@ -3371,6 +3477,69 @@ def parse_data_tables_storage_segment(lines, start_idx):
         i += 1
 
     return headers, rows, i
+
+
+def parse_dispatcher_segment(lines: list[str], start_idx: int) -> tuple[list[str], dict, int]:
+    headers = get_dispatcher_forced_columns()
+    data = {h: "" for h in headers}
+
+    field_mapping = {
+        "current icv time": "currentIcvTime",
+        "current icvr time": "currentIcvrTime",
+        "current icvtsd time": "currentIcvtsdTime",
+        "current prtyaging time": "currentPrtyagingTime",
+        "mro (qr) batching (mrobtch) value": "mroQrBatchingValue",
+        "concurrent subtasking value": "concurrentSubtaskingValue",
+        "current number of cics dispatcher tasks": "currentDispatcherTasks",
+        "peak number of cics dispatcher tasks": "peakDispatcherTasks",
+        "current number of tcbs attached": "currentTcbsAttached",
+        "current number of tcbs in use": "currentTcbsInUse",
+        "last excess tcb scan": "lastExcessTcbScan",
+        "number of excess tcb scans": "numberOfExcessTcbScans",
+        "last excess tcb scan - no tcb detached": "lastExcessTcbScanNoTcbDetached",
+        "excess tcb scans - no tcb detached": "excessTcbScansNoTcbDetached",
+        "number of excess tcbs detached": "numberOfExcessTcbsDetached",
+        "average excess tcbs detached per scan": "averageExcessTcbsDetachedPerScan",
+        "number of cics tcb modes": "numberOfCicsTcbModes",
+        "number of cics tcb pools": "numberOfCicsTcbPools",
+    }
+
+    i = start_idx
+
+    while i < len(lines):
+        line = lines[i]
+
+        if line.strip().startswith("0----") or line.strip().startswith("+_"):
+            break
+
+        if not line.strip() or line.strip().startswith("Applid"):
+            i += 1
+            continue
+
+        line_clean = re.sub(r"^\s*[0-]\s+", "", line)
+
+        matches = re.findall(
+            r"([^:]+?):\s*(.*?)(?=\s{2,}[A-Za-z][^:]{2,}:\s|$)",
+            line_clean
+        )
+
+        for label_raw, value_raw in matches:
+            label = re.sub(r"\.+", " ", label_raw).strip().lower()
+            label = re.sub(r"\s+", " ", label)
+            value = value_raw.strip()
+
+            if not label:
+                continue
+
+            for pattern_key, column_name in sorted(field_mapping.items(), key=lambda kv: len(kv[0]), reverse=True):
+                if pattern_key in label:
+                    if data[column_name] == "":
+                        data[column_name] = value
+                    break
+
+        i += 1
+
+    return headers, data, i
 
 
 def insert_storage_domain_subpool_rows(
@@ -3816,6 +3985,95 @@ def insert_data_tables_storage_rows(
     )
 
     return inserted
+
+
+def insert_dispatcher_row(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    data: dict
+) -> int:
+    sql = """
+    INSERT INTO cics_dispatcher
+    (
+        archivo,
+        fecha,
+        currentIcvTime,
+        currentIcvrTime,
+        currentIcvtsdTime,
+        currentPrtyagingTime,
+        mroQrBatchingValue,
+        concurrentSubtaskingValue,
+        currentDispatcherTasks,
+        peakDispatcherTasks,
+        currentTcbsAttached,
+        currentTcbsInUse,
+        lastExcessTcbScan,
+        numberOfExcessTcbScans,
+        lastExcessTcbScanNoTcbDetached,
+        excessTcbScansNoTcbDetached,
+        numberOfExcessTcbsDetached,
+        averageExcessTcbsDetachedPerScan,
+        numberOfCicsTcbModes,
+        numberOfCicsTcbPools
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    if not isinstance(data, dict):
+        print("Dispatcher: data no es diccionario, se omite")
+        return 0
+
+    currentIcvTime = str(data.get("currentIcvTime", "") or "").strip()
+    currentIcvrTime = str(data.get("currentIcvrTime", "") or "").strip()
+    currentIcvtsdTime = str(data.get("currentIcvtsdTime", "") or "").strip()
+    currentPrtyagingTime = str(data.get("currentPrtyagingTime", "") or "").strip()
+
+    mroQrBatchingValue = to_int_or_none(data.get("mroQrBatchingValue", ""))
+    concurrentSubtaskingValue = to_int_or_none(data.get("concurrentSubtaskingValue", ""))
+    currentDispatcherTasks = to_int_or_none(data.get("currentDispatcherTasks", ""))
+    peakDispatcherTasks = to_int_or_none(data.get("peakDispatcherTasks", ""))
+    currentTcbsAttached = to_int_or_none(data.get("currentTcbsAttached", ""))
+    currentTcbsInUse = to_int_or_none(data.get("currentTcbsInUse", ""))
+
+    lastExcessTcbScan = to_nonempty_string_or_none(data.get("lastExcessTcbScan", ""))
+    numberOfExcessTcbScans = to_int_or_none(data.get("numberOfExcessTcbScans", ""))
+    lastExcessTcbScanNoTcbDetached = to_nonempty_string_or_none(data.get("lastExcessTcbScanNoTcbDetached", ""))
+    excessTcbScansNoTcbDetached = to_int_or_none(data.get("excessTcbScansNoTcbDetached", ""))
+    numberOfExcessTcbsDetached = to_int_or_none(data.get("numberOfExcessTcbsDetached", ""))
+    averageExcessTcbsDetachedPerScan = to_float_or_none(data.get("averageExcessTcbsDetachedPerScan", ""))
+    numberOfCicsTcbModes = to_int_or_none(data.get("numberOfCicsTcbModes", ""))
+    numberOfCicsTcbPools = to_int_or_none(data.get("numberOfCicsTcbPools", ""))
+
+    try:
+        cursor.execute(sql, (
+            archivo_id,
+            fecha,
+            currentIcvTime,
+            currentIcvrTime,
+            currentIcvtsdTime,
+            currentPrtyagingTime,
+            mroQrBatchingValue,
+            concurrentSubtaskingValue,
+            currentDispatcherTasks,
+            peakDispatcherTasks,
+            currentTcbsAttached,
+            currentTcbsInUse,
+            lastExcessTcbScan,
+            numberOfExcessTcbScans,
+            lastExcessTcbScanNoTcbDetached,
+            excessTcbScansNoTcbDetached,
+            numberOfExcessTcbsDetached,
+            averageExcessTcbsDetachedPerScan,
+            numberOfCicsTcbModes,
+            numberOfCicsTcbPools,
+        ))
+
+        print("Dispatcher: registro insertado correctamente")
+        return 1
+    except Exception as e:
+        print(f"Dispatcher: error al insertar - {e}")
+        return 0
 
 
 # Funciones para el segmento System Status
