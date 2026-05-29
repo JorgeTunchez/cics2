@@ -719,6 +719,7 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
             "data tables - storage",
             "transactions",
             "dispatcher",
+            "dispatcher tcb modes",
             "transaction manager",
             "storage - domain subpools",
             "storage - task subpools",
@@ -921,6 +922,29 @@ def parse_cicsadm_lite(file_path: Path, allowed_segments: set[str] | None = None
                     "detalles": {
                         "columnas": columnas,
                         "datos": data
+                    }
+                }
+
+                j = next_j
+
+                while j < len(lines) and not reached_segment_boundary(lines[j]) and not _is_totals_line(lines[j]):
+                    j += 1
+
+                i = j
+                continue
+
+            # Dispatcher TCB Modes (solo primera tabla)
+            elif title_key == "dispatcher tcb modes":
+                columnas, filas, next_j = parse_dispatcher_tcb_modes_segment(lines, j)
+
+                key = unique_title(title, out)
+
+                out[key] = {
+                    "nombre": title,
+                    "tipo": "tabla",
+                    "detalles": {
+                        "columnas": columnas,
+                        "filas": filas
                     }
                 }
 
@@ -1218,6 +1242,7 @@ _REQUIRED_TABLES = {
     "cics_temporary_storage_queues",
     "cics_files",
     "cics_dispatcher",
+    "cics_dispatcher_tcb_modes",
     "cics_system_status",
     "cics_transaction_manager",
     "cics_storage_task_subpool",
@@ -1245,6 +1270,7 @@ def validar_tablas_requeridas(cursor) -> None:
                         'cics_temporary_storage_queues',
                         'cics_files',
                         'cics_dispatcher',
+                        'cics_dispatcher_tcb_modes',
                         'cics_system_status',
                         'cics_transaction_manager',
                         'cics_storage_task_subpool',
@@ -1382,6 +1408,14 @@ def existe_data_tables_storage(cursor, archivo_id: int, fecha: str) -> bool:
 def existe_dispatcher(cursor, archivo_id: int, fecha: str) -> bool:
     cursor.execute(
         "SELECT 1 FROM cics_dispatcher WHERE archivo = ? AND fecha = ?",
+        (archivo_id, fecha),
+    )
+    return cursor.fetchone() is not None
+
+
+def existe_dispatcher_tcb_modes(cursor, archivo_id: int, fecha: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM cics_dispatcher_tcb_modes WHERE archivo = ? AND fecha = ?",
         (archivo_id, fecha),
     )
     return cursor.fetchone() is not None
@@ -1704,6 +1738,48 @@ def insertar_dispatcher_si_falta(fecha_actual: str, nombre_archivo: str, diccion
         conn.close()
 
 
+def insertar_dispatcher_tcb_modes_si_falta(fecha_actual: str, nombre_archivo: str, diccionario_segmentos: dict) -> int:
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    try:
+        validar_tablas_requeridas(cursor)
+        archivo_nombre = nombre_archivo.replace(".TXT", "").replace(".JSON", "").strip().upper()
+        archivo_id = upsert_archivo(cursor, archivo_nombre)
+        conn.commit()
+
+        if existe_dispatcher_tcb_modes(cursor, archivo_id, fecha_actual):
+            print(f"Dispatcher TCB Modes ya existe para {archivo_nombre} fecha={fecha_actual}, se omite.")
+            return 0
+
+        payload = None
+        for k, v in diccionario_segmentos.items():
+            if str(k).strip().lower() == "dispatcher tcb modes":
+                payload = v
+                break
+
+        rows = []
+        if isinstance(payload, dict) and payload.get("tipo") == "tabla":
+            detalles = payload.get("detalles") or {}
+            rows = detalles.get("filas") or []
+        elif isinstance(payload, dict) and "filas" in payload:
+            rows = payload.get("filas") or []
+
+        if not isinstance(rows, list) or not rows:
+            print(f"Dispatcher TCB Modes: no hay datos para {archivo_nombre} fecha={fecha_actual}")
+            return 0
+
+        inserted = insert_dispatcher_tcb_modes_rows(cursor, archivo_id, fecha_actual, rows, batch_size=1000)
+        conn.commit()
+        return inserted
+
+    except Exception as e:
+        print(f"insertar_dispatcher_tcb_modes_si_falta: error - {e}")
+        return 0
+    finally:
+        conn.close()
+
+
 # Inserta filas del segmento Programs en cics_programs usando executemany por lotes
 def insert_programs_rows(cursor, archivo_id: int, fecha: str, rows: list[dict], batch_size: int = 1000) -> int:
     """
@@ -1926,6 +2002,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
     upsert_segmento(cursor, "Data Tables - Storage")
     upsert_segmento(cursor, "Transactions")
     upsert_segmento(cursor, "Dispatcher")
+    upsert_segmento(cursor, "Dispatcher TCB Modes")
     upsert_segmento(cursor, "Storage - Domain Subpools")
     upsert_segmento(cursor, "Storage - Task Subpools")
     upsert_segmento(cursor, "Storage - Program Subpools")
@@ -2149,6 +2226,47 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
             archivo_id,
             fechaActual,
             dispatcher_data
+        )
+
+        conn.commit()
+
+    # =====================================================
+    # 6.1) INSERTAR DISPATCHER TCB MODES (PRIMERA TABLA)
+    # =====================================================
+    dispatcher_tcb_modes_payload = None
+
+    for k, v in diccionarioSegmentos.items():
+        if str(k).strip().lower() == "dispatcher tcb modes":
+            dispatcher_tcb_modes_payload = v
+            break
+
+    dispatcher_tcb_modes_rows = []
+
+    if isinstance(dispatcher_tcb_modes_payload, dict):
+
+        if dispatcher_tcb_modes_payload.get("tipo") == "tabla":
+            detalles = dispatcher_tcb_modes_payload.get("detalles") or {}
+            dispatcher_tcb_modes_rows = detalles.get("filas") or []
+
+        elif "filas" in dispatcher_tcb_modes_payload:
+            dispatcher_tcb_modes_rows = dispatcher_tcb_modes_payload.get("filas") or []
+
+    inserted_dispatcher_tcb_modes = 0
+
+    if isinstance(dispatcher_tcb_modes_rows, list) and dispatcher_tcb_modes_rows:
+
+        rows_to_insert = (
+            dispatcher_tcb_modes_rows[:cantidadRegistroPrueba]
+            if boolPrueba
+            else dispatcher_tcb_modes_rows
+        )
+
+        inserted_dispatcher_tcb_modes = insert_dispatcher_tcb_modes_rows(
+            cursor,
+            archivo_id,
+            fechaActual,
+            rows_to_insert,
+            batch_size=1000
         )
 
         conn.commit()
@@ -2424,6 +2542,7 @@ def insertarValidacionSistema(fechaActual: str, nombreArchivo: str, diccionarioS
         f"Data Tables - Requests insertadas: {inserted_data_tables_requests} | "
         f"Data Tables - Storage insertadas: {inserted_data_tables_storage} | "
         f"Dispatcher insertado: {inserted_dispatcher} | "
+        f"Dispatcher TCB Modes insertados: {inserted_dispatcher_tcb_modes} | "
         f"Transactions insertadas: {inserted_tx} | "
         f"Storage Domain Subpools insertados: {inserted_storage_domain} | "
         f"Storage Task Subpools insertados: {inserted_storage_task} | "
@@ -3121,6 +3240,20 @@ def get_dispatcher_forced_columns() -> list[str]:
         "numberOfCicsTcbModes",
         "numberOfCicsTcbPools",
     ]
+
+
+def get_dispatcher_tcb_modes_forced_columns() -> list[str]:
+    return [
+        "tcbMode",
+        "tcbsAttachedCurrent",
+        "tcbsAttachedPeak",
+        "opSystemWaits",
+        "opSystemWaitTime",
+        "totalTcbDispatchTime",
+        "totalTcbCpuTime",
+        "dsTcbCpuTime",
+        "tcbCpuDispRatio",
+    ]
     
 
 
@@ -3540,6 +3673,78 @@ def parse_dispatcher_segment(lines: list[str], start_idx: int) -> tuple[list[str
         i += 1
 
     return headers, data, i
+
+
+def parse_dispatcher_tcb_modes_segment(lines: list[str], start_idx: int) -> tuple[list[str], list[dict], int]:
+    headers = get_dispatcher_tcb_modes_forced_columns()
+    rows: list[dict] = []
+    i = start_idx
+    table_started = False
+
+    while i < len(lines):
+        line = lines[i]
+
+        if reached_segment_boundary(line):
+            break
+
+        if is_page_header(line):
+            i += 1
+            continue
+
+        if not line.strip():
+            i += 1
+            continue
+
+        low = line.lower()
+
+        if "totals" in low and table_started:
+            break
+
+        if (
+            "dispatcher start time and date" in low
+            or "address space accumulated cpu time" in low
+            or "address space accumulated srb time" in low
+            or "address space cpu time (since reset)" in low
+            or "address space srb time (since reset)" in low
+            or "tcb mode" in low
+            or "op. system" in low
+            or "dispatch time" in low
+            or "cpu time" in low
+            or "ratio" in low
+            or re.match(r"^\s*\+", line)
+        ):
+            i += 1
+            continue
+
+        line_clean = re.sub(r"^\s*0\s+", "", line).strip()
+        parts = [p.strip() for p in re.split(r"\s{2,}", line_clean) if p.strip()]
+
+        if len(parts) < 8:
+            i += 1
+            continue
+
+        mode = parts[0]
+        if not re.fullmatch(r"[A-Z0-9]{2}", mode):
+            i += 1
+            continue
+
+        row = {
+            "tcbMode": mode,
+            "tcbsAttachedCurrent": parts[1].replace(",", "") if len(parts) > 1 else "",
+            "tcbsAttachedPeak": parts[2].replace(",", "") if len(parts) > 2 else "",
+            "opSystemWaits": parts[3].replace(",", "") if len(parts) > 3 else "",
+            "opSystemWaitTime": parts[4] if len(parts) > 4 else "",
+            "totalTcbDispatchTime": parts[5] if len(parts) > 5 else "",
+            "totalTcbCpuTime": parts[6] if len(parts) > 6 else "",
+            "dsTcbCpuTime": parts[7] if len(parts) > 7 else "",
+            "tcbCpuDispRatio": parts[8].replace("%", "") if len(parts) > 8 else "",
+        }
+
+        rows.append(row)
+        table_started = True
+        i += 1
+
+    return headers, rows, i
 
 
 def insert_storage_domain_subpool_rows(
@@ -4074,6 +4279,83 @@ def insert_dispatcher_row(
     except Exception as e:
         print(f"Dispatcher: error al insertar - {e}")
         return 0
+
+
+def insert_dispatcher_tcb_modes_rows(
+    cursor,
+    archivo_id: int,
+    fecha: str,
+    rows: list[dict],
+    batch_size: int = 1000,
+) -> int:
+    sql = """
+    INSERT INTO cics_dispatcher_tcb_modes
+    (
+        archivo,
+        fecha,
+        tcbMode,
+        tcbsAttachedCurrent,
+        tcbsAttachedPeak,
+        opSystemWaits,
+        opSystemWaitTime,
+        totalTcbDispatchTime,
+        totalTcbCpuTime,
+        dsTcbCpuTime,
+        tcbCpuDispRatio
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    inserted = 0
+    total_rows = 0
+    skipped_empty_mode = 0
+    batch = []
+
+    try:
+        cursor.fast_executemany = True
+    except Exception:
+        pass
+
+    for r in rows:
+        total_rows += 1
+
+        if not isinstance(r, dict):
+            continue
+
+        tcb_mode = str(r.get("tcbMode", "") or "").strip()
+        if not tcb_mode:
+            skipped_empty_mode += 1
+            continue
+
+        batch.append((
+            archivo_id,
+            fecha,
+            tcb_mode,
+            to_int_or_none(r.get("tcbsAttachedCurrent", "")),
+            to_int_or_none(r.get("tcbsAttachedPeak", "")),
+            to_int_or_none(r.get("opSystemWaits", "")),
+            to_nonempty_string_or_none(r.get("opSystemWaitTime", "")),
+            to_nonempty_string_or_none(r.get("totalTcbDispatchTime", "")),
+            to_nonempty_string_or_none(r.get("totalTcbCpuTime", "")),
+            to_nonempty_string_or_none(r.get("dsTcbCpuTime", "")),
+            to_float_or_none(r.get("tcbCpuDispRatio", "")),
+        ))
+
+        if len(batch) >= batch_size:
+            cursor.executemany(sql, batch)
+            inserted += len(batch)
+            batch.clear()
+
+    if batch:
+        cursor.executemany(sql, batch)
+        inserted += len(batch)
+
+    print(
+        f"Dispatcher TCB Modes: total_rows={total_rows}, inserted={inserted}, "
+        f"skipped_empty_mode={skipped_empty_mode}"
+    )
+
+    return inserted
 
 
 # Funciones para el segmento System Status

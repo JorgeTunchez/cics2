@@ -25,6 +25,10 @@ IF OBJECT_ID('dbo.cics_dispatcher', 'U') IS NOT NULL
     DROP TABLE dbo.cics_dispatcher;
 GO
 
+IF OBJECT_ID('dbo.cics_dispatcher_tcb_modes', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_dispatcher_tcb_modes;
+GO
+
 IF OBJECT_ID('dbo.cics_storage_program_subpool', 'U') IS NOT NULL
     DROP TABLE dbo.cics_storage_program_subpool;
 GO
@@ -545,6 +549,47 @@ GO
 
 ALTER TABLE dbo.cics_dispatcher
 ADD CONSTRAINT FK_cics_dispatcher_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+GO
+
+
+/* =========================================
+   TABLA: cics_dispatcher_tcb_modes
+   Filas por TCB Mode (primera tabla de Dispatcher TCB Modes)
+   ========================================= */
+IF OBJECT_ID('dbo.cics_dispatcher_tcb_modes', 'U') IS NOT NULL
+    DROP TABLE dbo.cics_dispatcher_tcb_modes;
+GO
+
+CREATE TABLE dbo.cics_dispatcher_tcb_modes
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    archivo INT NOT NULL,
+    fecha DATE NOT NULL,
+    tcbMode NVARCHAR(10) NOT NULL,
+    tcbsAttachedCurrent INT NULL,
+    tcbsAttachedPeak INT NULL,
+    opSystemWaits BIGINT NULL,
+    opSystemWaitTime NVARCHAR(30) NULL,
+    totalTcbDispatchTime NVARCHAR(30) NULL,
+    totalTcbCpuTime NVARCHAR(30) NULL,
+    dsTcbCpuTime NVARCHAR(30) NULL,
+    tcbCpuDispRatio DECIMAL(6,2) NULL,
+
+    CONSTRAINT UX_cics_dispatcher_tcb_modes_archivo_fecha_mode UNIQUE (archivo, fecha, tcbMode)
+);
+GO
+
+CREATE INDEX IX_cics_dispatcher_tcb_modes_archivo_fecha
+ON dbo.cics_dispatcher_tcb_modes(archivo, fecha);
+GO
+
+CREATE INDEX IX_cics_dispatcher_tcb_modes_mode
+ON dbo.cics_dispatcher_tcb_modes(tcbMode);
+GO
+
+ALTER TABLE dbo.cics_dispatcher_tcb_modes
+ADD CONSTRAINT FK_cics_dispatcher_tcb_modes_archivo
 FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 
