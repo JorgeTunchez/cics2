@@ -3113,11 +3113,19 @@ def obtener_carpetas_fecha_ordenadas(directorio_entrada: Path) -> list[tuple[str
 
         nombre = item.name.strip()
 
-        try:
-            fecha = datetime.strptime(nombre, "%Y-%m-%d").date()
-            carpetas.append((fecha.isoformat(), item))
-        except ValueError:
+        fecha = None
+        for fmt in ("%Y-%m-%d", "%Y_%m_%d"):
+            try:
+                fecha = datetime.strptime(nombre, fmt).date()
+                break
+            except ValueError:
+                continue
+
+        if fecha is None:
             continue
+
+        # Se normaliza a ISO para comparar/ordenar de forma consistente.
+        carpetas.append((fecha.isoformat(), item))
 
     carpetas.sort(key=lambda x: x[0], reverse=True)
     return carpetas

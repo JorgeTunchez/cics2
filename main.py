@@ -464,107 +464,15 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
     print(f"Fecha validada desde encabezados: {fecha_encabezado} (archivos válidos: {len(archivos_validos)})")
 
     if carpeta_ya_procesada(fecha_carpeta, nombre_carpeta, archivos_validos):
-        print(f"Carpeta ya procesada anteriormente: {nombre_carpeta}. Se omite.")
-        # Regenerar JSON para incluir segmentos nuevos soportados por parser.
-        generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha, archivos_permitidos=archivos_validos)
-        backfill_statistics_desde_json(
-            directorio_salida_fecha,
-            fecha_carpeta,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_trace_status_desde_json(
-            directorio_salida_fecha,
-            fecha_carpeta,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_transaction_manager_desde_json(
-            directorio_salida_fecha,
-            fecha_carpeta,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_dispatcher_desde_json(
-            directorio_salida_fecha,
-            fecha_carpeta,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_data_tables_requests_desde_json(
-            directorio_salida_fecha,
-            fecha_carpeta,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_data_tables_storage_desde_json(
-            directorio_salida_fecha,
-            fecha_carpeta,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_storage_task_subpool_desde_json(
-            directorio_salida_fecha,
-            fecha_carpeta,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_storage_program_subpool_desde_json(
-            directorio_salida_fecha,
-            fecha_carpeta,
-            archivos_permitidos=archivos_validos,
-        )
+        print(f"Carpeta ya cargada: {nombre_carpeta}. Se omite completamente.")
         return
 
     cantidad_registros = validar_carga_fecha(fecha_encabezado)
     if cantidad_registros > 0:
         print(
             f"Ya existen {cantidad_registros} registros en base de datos "
-            f"para la fecha {fecha_encabezado}. No se realizará la carga de esta carpeta."
+            f"para la fecha {fecha_encabezado}. Se omite completamente esta carpeta."
         )
-        # Regenerar JSON para incluir segmentos nuevos soportados por parser.
-        generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha, archivos_permitidos=archivos_validos)
-        backfill_statistics_desde_json(
-            directorio_salida_fecha,
-            fecha_encabezado,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_trace_status_desde_json(
-            directorio_salida_fecha,
-            fecha_encabezado,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_transaction_manager_desde_json(
-            directorio_salida_fecha,
-            fecha_encabezado,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_dispatcher_desde_json(
-            directorio_salida_fecha,
-            fecha_encabezado,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_data_tables_requests_desde_json(
-            directorio_salida_fecha,
-            fecha_encabezado,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_data_tables_storage_desde_json(
-            directorio_salida_fecha,
-            fecha_encabezado,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_storage_task_subpool_desde_json(
-            directorio_salida_fecha,
-            fecha_encabezado,
-            archivos_permitidos=archivos_validos,
-        )
-        backfill_storage_program_subpool_desde_json(
-            directorio_salida_fecha,
-            fecha_encabezado,
-            archivos_permitidos=archivos_validos,
-        )
-        for nombre_archivo in archivos_validos:
-            registrar_estado_carpeta(
-                fecha_carpeta,
-                nombre_carpeta,
-                "NO PROCESADA",
-                "registros ya existentes",
-                nombre_archivo=nombre_archivo,
-            )
         return
 
     generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha, archivos_permitidos=archivos_validos)
