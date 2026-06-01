@@ -14,7 +14,43 @@ DIRECTORIO_SALIDA = PROJECT_ROOT / "SALIDA"
 DIRECTORIO_SALIDA.mkdir(exist_ok=True)
 
 
-def generar_json_desde_txt(directorio_fecha: Path, directorio_salida_fecha: Path):
+def normalizar_archivos_permitidos(archivos_permitidos: list[str] | None) -> set[str] | None:
+    if archivos_permitidos is None:
+        return None
+    return {str(nombre).strip().upper() for nombre in archivos_permitidos if str(nombre).strip()}
+
+
+def listar_archivos_txt(directorio_fecha: Path, archivos_permitidos: list[str] | None = None) -> list[Path]:
+    permitidos = normalizar_archivos_permitidos(archivos_permitidos)
+    archivos = sorted(
+        [p for p in directorio_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
+    )
+    if permitidos is None:
+        return archivos
+    return [p for p in archivos if p.name.upper() in permitidos]
+
+
+def listar_archivos_json(directorio_salida_fecha: Path, archivos_permitidos: list[str] | None = None) -> list[Path]:
+    permitidos = normalizar_archivos_permitidos(archivos_permitidos)
+    archivos_json = sorted(
+        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
+    )
+    if permitidos is None:
+        return archivos_json
+
+    filtrados = []
+    for json_path in archivos_json:
+        nombre_txt = json_path.name.upper().replace(".JSON", ".TXT")
+        if nombre_txt in permitidos:
+            filtrados.append(json_path)
+    return filtrados
+
+
+def generar_json_desde_txt(
+    directorio_fecha: Path,
+    directorio_salida_fecha: Path,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Lee todos los TXT de una carpeta de fecha y genera un JSON por cada uno
     dentro de su carpeta correspondiente en SALIDA.
@@ -24,9 +60,7 @@ def generar_json_desde_txt(directorio_fecha: Path, directorio_salida_fecha: Path
 
     directorio_salida_fecha.mkdir(parents=True, exist_ok=True)
 
-    archivos = sorted(
-        [p for p in directorio_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
-    )
+    archivos = listar_archivos_txt(directorio_fecha, archivos_permitidos=archivos_permitidos)
 
     for archivo_path in archivos:
         archivo = archivo_path.name.upper()
@@ -50,13 +84,15 @@ def generar_json_desde_txt(directorio_fecha: Path, directorio_salida_fecha: Path
             print(f"  [ERROR] Error procesando {archivo}: {e}\n")
 
 
-def insertar_bd_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def insertar_bd_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Recorre la carpeta de JSON de una fecha específica y manda a BD.
     """
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para insertar en BD.")
@@ -80,7 +116,11 @@ def insertar_bd_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
             raise
 
 
-def backfill_statistics_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def backfill_statistics_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Inserta Statistics faltantes desde JSON ya generados, sin reintentar
     la carga completa de tablas con restricciones únicas.
@@ -89,9 +129,7 @@ def backfill_statistics_desde_json(directorio_salida_fecha: Path, fecha_actual: 
         print("No existe carpeta de SALIDA para backfill de Statistics.")
         return
 
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para backfill de Statistics.")
@@ -115,7 +153,11 @@ def backfill_statistics_desde_json(directorio_salida_fecha: Path, fecha_actual: 
     print(f"Backfill de Statistics completado. Registros insertados: {inserted_total}")
 
 
-def backfill_trace_status_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def backfill_trace_status_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Inserta Trace Status faltantes desde JSON ya generados, sin reintentar
     la carga completa de tablas con restricciones únicas.
@@ -124,9 +166,7 @@ def backfill_trace_status_desde_json(directorio_salida_fecha: Path, fecha_actual
         print("No existe carpeta de SALIDA para backfill de Trace Status.")
         return
 
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para backfill de Trace Status.")
@@ -150,7 +190,11 @@ def backfill_trace_status_desde_json(directorio_salida_fecha: Path, fecha_actual
     print(f"Backfill de Trace Status completado. Registros insertados: {inserted_total}")
 
 
-def backfill_transaction_manager_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def backfill_transaction_manager_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Inserta Transaction Manager faltantes desde JSON ya generados, sin reintentar
     la carga completa de tablas con restricciones únicas.
@@ -159,9 +203,7 @@ def backfill_transaction_manager_desde_json(directorio_salida_fecha: Path, fecha
         print("No existe carpeta de SALIDA para backfill de Transaction Manager.")
         return
 
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para backfill de Transaction Manager.")
@@ -185,7 +227,11 @@ def backfill_transaction_manager_desde_json(directorio_salida_fecha: Path, fecha
     print(f"Backfill de Transaction Manager completado. Registros insertados: {inserted_total}")
 
 
-def backfill_dispatcher_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def backfill_dispatcher_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Inserta Dispatcher faltante desde JSON ya generados.
     """
@@ -193,9 +239,7 @@ def backfill_dispatcher_desde_json(directorio_salida_fecha: Path, fecha_actual: 
         print("No existe carpeta de SALIDA para backfill de Dispatcher.")
         return
 
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para backfill de Dispatcher.")
@@ -219,7 +263,11 @@ def backfill_dispatcher_desde_json(directorio_salida_fecha: Path, fecha_actual: 
     print(f"Backfill de Dispatcher completado. Registros insertados: {inserted_total}")
 
 
-def backfill_storage_program_subpool_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def backfill_storage_program_subpool_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Inserta Storage - Program Subpools faltantes desde JSON ya generados.
     """
@@ -227,9 +275,7 @@ def backfill_storage_program_subpool_desde_json(directorio_salida_fecha: Path, f
         print("No existe carpeta de SALIDA para backfill de Storage - Program Subpools.")
         return
 
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para backfill de Storage - Program Subpools.")
@@ -253,7 +299,11 @@ def backfill_storage_program_subpool_desde_json(directorio_salida_fecha: Path, f
     print(f"Backfill de Storage - Program Subpools completado. Registros insertados: {inserted_total}")
 
 
-def backfill_storage_task_subpool_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def backfill_storage_task_subpool_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Inserta Storage - Task Subpools faltantes desde JSON ya generados.
     """
@@ -261,9 +311,7 @@ def backfill_storage_task_subpool_desde_json(directorio_salida_fecha: Path, fech
         print("No existe carpeta de SALIDA para backfill de Storage - Task Subpools.")
         return
 
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para backfill de Storage - Task Subpools.")
@@ -287,7 +335,11 @@ def backfill_storage_task_subpool_desde_json(directorio_salida_fecha: Path, fech
     print(f"Backfill de Storage - Task Subpools completado. Registros insertados: {inserted_total}")
 
 
-def backfill_data_tables_requests_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def backfill_data_tables_requests_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Inserta Data Tables - Requests faltantes desde JSON ya generados.
     """
@@ -295,9 +347,7 @@ def backfill_data_tables_requests_desde_json(directorio_salida_fecha: Path, fech
         print("No existe carpeta de SALIDA para backfill de Data Tables - Requests.")
         return
 
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para backfill de Data Tables - Requests.")
@@ -321,7 +371,11 @@ def backfill_data_tables_requests_desde_json(directorio_salida_fecha: Path, fech
     print(f"Backfill de Data Tables - Requests completado. Registros insertados: {inserted_total}")
 
 
-def backfill_data_tables_storage_desde_json(directorio_salida_fecha: Path, fecha_actual: str):
+def backfill_data_tables_storage_desde_json(
+    directorio_salida_fecha: Path,
+    fecha_actual: str,
+    archivos_permitidos: list[str] | None = None,
+):
     """
     Inserta Data Tables - Storage faltantes desde JSON ya generados.
     """
@@ -329,9 +383,7 @@ def backfill_data_tables_storage_desde_json(directorio_salida_fecha: Path, fecha
         print("No existe carpeta de SALIDA para backfill de Data Tables - Storage.")
         return
 
-    archivos_json = sorted(
-        [p for p in directorio_salida_fecha.iterdir() if p.is_file() and p.suffix.upper() == ".JSON"]
-    )
+    archivos_json = listar_archivos_json(directorio_salida_fecha, archivos_permitidos=archivos_permitidos)
 
     if not archivos_json:
         print("No hay archivos JSON para backfill de Data Tables - Storage.")
@@ -367,33 +419,95 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
     """
     nombre_carpeta = ruta_carpeta.name
     directorio_salida_fecha = DIRECTORIO_SALIDA / nombre_carpeta
+    archivos_txt = sorted(
+        [p.name.upper() for p in ruta_carpeta.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
+    )
     print(f"\nProcesando carpeta: {nombre_carpeta}")
-
-    if carpeta_ya_procesada(fecha_carpeta, nombre_carpeta):
-        print(f"Carpeta ya procesada anteriormente: {nombre_carpeta}. Se omite.")
-        # Regenerar JSON para incluir segmentos nuevos soportados por parser.
-        generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)
-        backfill_statistics_desde_json(directorio_salida_fecha, fecha_carpeta)
-        backfill_trace_status_desde_json(directorio_salida_fecha, fecha_carpeta)
-        backfill_transaction_manager_desde_json(directorio_salida_fecha, fecha_carpeta)
-        backfill_dispatcher_desde_json(directorio_salida_fecha, fecha_carpeta)
-        backfill_data_tables_requests_desde_json(directorio_salida_fecha, fecha_carpeta)
-        backfill_data_tables_storage_desde_json(directorio_salida_fecha, fecha_carpeta)
-        backfill_storage_task_subpool_desde_json(directorio_salida_fecha, fecha_carpeta)
-        backfill_storage_program_subpool_desde_json(directorio_salida_fecha, fecha_carpeta)
-        return
 
     validar_cantidad_archivos(ruta_carpeta, 6)
 
-    fecha_encabezado = validar_fecha_unica_archivos(ruta_carpeta)
-    print(f"Fecha validada desde encabezados: {fecha_encabezado}")
+    archivos_validos = []
+    for archivo_path in listar_archivos_txt(ruta_carpeta):
+        nombre_archivo = archivo_path.name.upper()
+        try:
+            fecha_archivo = obtener_fecha_encabezado(archivo_path, fecha_esperada=fecha_carpeta)
+        except Exception as e:
+            registrar_estado_carpeta(
+                fecha_carpeta,
+                nombre_carpeta,
+                "NO PROCESADA",
+                resumir_error_carga(e),
+                nombre_archivo=nombre_archivo,
+            )
+            print(f"  [WARN] {nombre_archivo} no será procesado: {e}")
+            continue
 
-    # Validación adicional: el nombre de carpeta debe coincidir con la fecha del encabezado
-    if fecha_encabezado != fecha_carpeta:
-        raise ValueError(
-            f"La carpeta '{nombre_carpeta}' indica fecha {fecha_carpeta}, "
-            f"pero los archivos contienen fecha {fecha_encabezado}."
+        if fecha_archivo != fecha_carpeta:
+            motivo = f"fecha {fecha_archivo} no coincide con carpeta {fecha_carpeta}"
+            registrar_estado_carpeta(
+                fecha_carpeta,
+                nombre_carpeta,
+                "NO PROCESADA",
+                motivo,
+                nombre_archivo=nombre_archivo,
+            )
+            print(f"  [WARN] {nombre_archivo} no será procesado: {motivo}")
+            continue
+
+        archivos_validos.append(nombre_archivo)
+
+    if not archivos_validos:
+        print(f"[WARN] Ningún archivo válido para procesar en {nombre_carpeta}.")
+        return
+
+    fecha_encabezado = fecha_carpeta
+    print(f"Fecha validada desde encabezados: {fecha_encabezado} (archivos válidos: {len(archivos_validos)})")
+
+    if carpeta_ya_procesada(fecha_carpeta, nombre_carpeta, archivos_validos):
+        print(f"Carpeta ya procesada anteriormente: {nombre_carpeta}. Se omite.")
+        # Regenerar JSON para incluir segmentos nuevos soportados por parser.
+        generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha, archivos_permitidos=archivos_validos)
+        backfill_statistics_desde_json(
+            directorio_salida_fecha,
+            fecha_carpeta,
+            archivos_permitidos=archivos_validos,
         )
+        backfill_trace_status_desde_json(
+            directorio_salida_fecha,
+            fecha_carpeta,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_transaction_manager_desde_json(
+            directorio_salida_fecha,
+            fecha_carpeta,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_dispatcher_desde_json(
+            directorio_salida_fecha,
+            fecha_carpeta,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_data_tables_requests_desde_json(
+            directorio_salida_fecha,
+            fecha_carpeta,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_data_tables_storage_desde_json(
+            directorio_salida_fecha,
+            fecha_carpeta,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_storage_task_subpool_desde_json(
+            directorio_salida_fecha,
+            fecha_carpeta,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_storage_program_subpool_desde_json(
+            directorio_salida_fecha,
+            fecha_carpeta,
+            archivos_permitidos=archivos_validos,
+        )
+        return
 
     cantidad_registros = validar_carga_fecha(fecha_encabezado)
     if cantidad_registros > 0:
@@ -402,22 +516,70 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
             f"para la fecha {fecha_encabezado}. No se realizará la carga de esta carpeta."
         )
         # Regenerar JSON para incluir segmentos nuevos soportados por parser.
-        generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)
-        backfill_statistics_desde_json(directorio_salida_fecha, fecha_encabezado)
-        backfill_trace_status_desde_json(directorio_salida_fecha, fecha_encabezado)
-        backfill_transaction_manager_desde_json(directorio_salida_fecha, fecha_encabezado)
-        backfill_dispatcher_desde_json(directorio_salida_fecha, fecha_encabezado)
-        backfill_data_tables_requests_desde_json(directorio_salida_fecha, fecha_encabezado)
-        backfill_data_tables_storage_desde_json(directorio_salida_fecha, fecha_encabezado)
-        backfill_storage_task_subpool_desde_json(directorio_salida_fecha, fecha_encabezado)
-        backfill_storage_program_subpool_desde_json(directorio_salida_fecha, fecha_encabezado)
+        generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha, archivos_permitidos=archivos_validos)
+        backfill_statistics_desde_json(
+            directorio_salida_fecha,
+            fecha_encabezado,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_trace_status_desde_json(
+            directorio_salida_fecha,
+            fecha_encabezado,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_transaction_manager_desde_json(
+            directorio_salida_fecha,
+            fecha_encabezado,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_dispatcher_desde_json(
+            directorio_salida_fecha,
+            fecha_encabezado,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_data_tables_requests_desde_json(
+            directorio_salida_fecha,
+            fecha_encabezado,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_data_tables_storage_desde_json(
+            directorio_salida_fecha,
+            fecha_encabezado,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_storage_task_subpool_desde_json(
+            directorio_salida_fecha,
+            fecha_encabezado,
+            archivos_permitidos=archivos_validos,
+        )
+        backfill_storage_program_subpool_desde_json(
+            directorio_salida_fecha,
+            fecha_encabezado,
+            archivos_permitidos=archivos_validos,
+        )
+        for nombre_archivo in archivos_validos:
+            registrar_estado_carpeta(
+                fecha_carpeta,
+                nombre_carpeta,
+                "NO PROCESADA",
+                "registros ya existentes",
+                nombre_archivo=nombre_archivo,
+            )
         return
 
-    generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha)
-    insertar_bd_desde_json(directorio_salida_fecha, fecha_encabezado)
-    registrar_carpeta_procesada(fecha_encabezado, nombre_carpeta)
+    generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha, archivos_permitidos=archivos_validos)
+    insertar_bd_desde_json(directorio_salida_fecha, fecha_encabezado, archivos_permitidos=archivos_validos)
+    for nombre_archivo in archivos_validos:
+        registrar_carpeta_procesada(fecha_encabezado, nombre_carpeta, nombre_archivo)
 
     print(f"[OK] Carpeta procesada correctamente: {nombre_carpeta}")
+
+
+def resumir_error_carga(error: Exception) -> str:
+    mensaje = " ".join(str(error).split())
+    if not mensaje:
+        return "error no especificado"
+    return mensaje[:255]
 
 
 def main():
@@ -434,6 +596,17 @@ def main():
         try:
             procesar_carpeta_fecha(fecha_carpeta, ruta_carpeta)
         except Exception as e:
+            archivos_txt = sorted(
+                [p.name.upper() for p in ruta_carpeta.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
+            )
+            for nombre_archivo in archivos_txt:
+                registrar_estado_carpeta(
+                    fecha_carpeta,
+                    ruta_carpeta.name,
+                    "NO PROCESADA",
+                    resumir_error_carga(e),
+                    nombre_archivo=nombre_archivo,
+                )
             print(f"[ERROR] Error procesando carpeta {ruta_carpeta.name}: {e}\n")
 
 

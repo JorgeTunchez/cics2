@@ -22,7 +22,8 @@ El proceso esta pensado para ejecucion por lotes diarios con una carpeta por fec
 - [14) Troubleshooting](#14-troubleshooting)
 - [15) Buenas practicas operativas](#15-buenas-practicas-operativas)
 - [16) Comando rapido de uso](#16-comando-rapido-de-uso)
-- [17) Historial de cambios](#17-historial-de-cambios)
+- [17) Consultas SQL de monitoreo](#17-consultas-sql-de-monitoreo)
+- [18) Historial de cambios](#18-historial-de-cambios)
 
 ## 1) Objetivo del proyecto
 
@@ -120,8 +121,9 @@ Reglas validadas por el proceso:
 
 1. Solo se procesan carpetas con formato de fecha YYYY-MM-DD.
 2. Cada carpeta debe contener exactamente 6 archivos TXT.
-3. Todos los TXT deben compartir la misma fecha en encabezado.
-4. La fecha del encabezado debe coincidir con el nombre de carpeta.
+3. La fecha del encabezado se valida por archivo (no se descarta toda la carpeta por un solo archivo invalido).
+4. Solo se procesan los TXT cuya fecha del encabezado coincide con la carpeta.
+5. Los TXT con fecha faltante o invalida se registran como NO PROCESADA en cics_cargas.
 
 Ejemplo:
 
@@ -154,16 +156,12 @@ Salida de consola esperada:
 
 Por cada carpeta de fecha:
 
-1. Verifica si la carpeta ya fue procesada en control de cargas.
-2. Si ya fue procesada:
-   Re-genera JSON y ejecuta backfills selectivos de segmentos nuevos/faltantes.
-3. Si no fue procesada:
-   Ejecuta validaciones de cantidad de archivos y fecha.
-4. Verifica si ya hay registros de la fecha en tablas principales.
-5. Si ya hay datos:
-   Re-genera JSON y ejecuta backfills.
-6. Si no hay datos:
-   Genera JSON, inserta en BD y registra carpeta como procesada.
+1. Verifica cantidad esperada de TXT en la carpeta (6).
+2. Valida fecha por cada archivo y separa archivos validos e invalidos.
+3. Registra en cics_cargas como NO PROCESADA los archivos invalidos (con descripcion corta).
+4. Si hay archivos validos ya cargados, re-genera JSON y ejecuta backfills solo para esos archivos.
+5. Si no hay datos previos para la fecha, genera JSON e inserta BD solo para archivos validos.
+6. Registra en cics_cargas un estado por archivo (PROCESADO o NO PROCESADA).
 
 Punto de entrada del flujo por carpeta: [main.py](main.py)
 
@@ -205,6 +203,14 @@ Tablas de control:
 - cics_cargas
 - cics_archivos
 - cics_segmento
+
+Estructura operativa de cics_cargas:
+
+- fecha: fecha de la carpeta procesada.
+- carpeta: nombre de carpeta en formato YYYY-MM-DD.
+- archivo: id del archivo (FK a cics_archivos.id).
+- estado: PROCESADO o NO PROCESADA.
+- descripcion: motivo corto del resultado (ej. carga correcta, No se encontro la fecha...).
 
 Tablas de datos (principales):
 
@@ -286,8 +292,8 @@ Si necesitas recargar desde cero una fecha:
 
 Validaciones de negocio y tecnica:
 
-- Fecha unica en encabezados por carpeta.
-- Coincidencia fecha encabezado vs nombre de carpeta.
+- Fecha valida por archivo.
+- Coincidencia fecha encabezado vs nombre de carpeta por cada TXT valido.
 - Cantidad exacta de 6 TXT por fecha.
 - Existencia de tablas requeridas antes de insertar.
 - Control de duplicados por indices unicos en varias tablas.
@@ -310,9 +316,21 @@ Causas habituales:
 1. Ya esta registrada en cics_cargas.
 2. Ya existen datos para esa fecha en tablas principales.
 
+Nota:
+
+- Con procesamiento parcial, una carpeta puede quedar con mezcla de estados por archivo.
+- Revisar cics_cargas por archivo para distinguir cuales fueron PROCESADO y cuales NO PROCESADA.
+
+### Problema: un TXT no se procesa por fecha
+
+Causa habitual:
+
+1. El archivo no trae fecha en encabezado o no coincide con la fecha de carpeta.
+
 Accion:
 
-- Verificar mensajes de consola y, si aplica, limpiar control/datos para recarga completa.
+- Revisar cics_cargas.descripcion para el archivo afectado.
+- Corregir el encabezado del TXT y reintentar la corrida.
 
 ### Problema: no aparece segmento en JSON
 
@@ -349,7 +367,147 @@ Resumen minimo:
 
     python main.py
 
-## 17) Historial de cambios
+## 17) Consultas SQL de monitoreo
+
+### 17.1 Estado por fecha y porcentaje de exito (cics_cargas)
+
+  SELECT
+    c.fecha,
+    COUNT(*) AS total_archivos,
+    SUM(CASE WHEN c.estado = 'PROCESADO' THEN 1 ELSE 0 END) AS procesados,
+    SUM(CASE WHEN c.estado = 'NO PROCESADA' THEN 1 ELSE 0 END) AS no_procesados,
+    CAST(
+      100.0 * SUM(CASE WHEN c.estado = 'PROCESADO' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0)
+      AS DECIMAL(5,2)
+    ) AS porcentaje_exito
+  FROM cics_cargas c
+  GROUP BY c.fecha
+  ORDER BY c.fecha DESC;
+
+### 17.2 Detalle de archivos no procesados
+
+  SELECT
+    c.fecha,
+    c.carpeta,
+    a.archivo AS archivo,
+    c.estado,
+    c.descripcion,
+    c.fecha_proceso
+  FROM cics_cargas c
+  INNER JOIN cics_archivos a ON a.id = c.archivo
+  WHERE c.estado = 'NO PROCESADA'
+  ORDER BY c.fecha DESC, c.carpeta, a.archivo;
+
+### 17.3 Ultima corrida por carpeta y archivo
+
+  SELECT
+    c.fecha,
+    c.carpeta,
+    a.archivo AS archivo,
+    c.estado,
+    c.descripcion,
+    c.fecha_proceso
+  FROM cics_cargas c
+  INNER JOIN cics_archivos a ON a.id = c.archivo
+  WHERE c.fecha = '2026-05-09'
+  ORDER BY a.archivo;
+
+### 17.4 Peso total de tablas CICS (MB)
+
+  ;WITH cte AS
+  (
+    SELECT
+      t.name AS tabla,
+      SUM(ps.row_count) AS filas,
+      SUM(ps.used_page_count) * 8.0 / 1024 AS usado_mb
+    FROM sys.tables t
+    INNER JOIN sys.dm_db_partition_stats ps
+      ON ps.object_id = t.object_id
+    WHERE t.is_ms_shipped = 0
+      AND t.name LIKE 'cics[_]%'
+    GROUP BY t.name
+  )
+  SELECT
+    tabla,
+    filas,
+    CAST(usado_mb AS DECIMAL(18,2)) AS usado_mb
+  FROM cte
+  ORDER BY usado_mb DESC;
+
+  SELECT
+    'TOTAL CICS' AS concepto,
+    CAST(SUM(usado_mb) AS DECIMAL(18,2)) AS usado_mb
+  FROM
+  (
+    SELECT SUM(ps.used_page_count) * 8.0 / 1024 AS usado_mb
+    FROM sys.tables t
+    INNER JOIN sys.dm_db_partition_stats ps
+      ON ps.object_id = t.object_id
+    WHERE t.is_ms_shipped = 0
+      AND t.name LIKE 'cics[_]%'
+  ) x;
+
+### 17.5 Consultas parametrizadas (fecha y carpeta)
+
+  DECLARE @fecha DATE = '2026-05-09';
+  DECLARE @carpeta NVARCHAR(100) = '2026-05-09';
+
+  -- Resumen de estado por fecha/carpeta
+  SELECT
+    c.fecha,
+    c.carpeta,
+    COUNT(*) AS total_archivos,
+    SUM(CASE WHEN c.estado = 'PROCESADO' THEN 1 ELSE 0 END) AS procesados,
+    SUM(CASE WHEN c.estado = 'NO PROCESADA' THEN 1 ELSE 0 END) AS no_procesados,
+    CAST(
+      100.0 * SUM(CASE WHEN c.estado = 'PROCESADO' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0)
+      AS DECIMAL(5,2)
+    ) AS porcentaje_exito
+  FROM cics_cargas c
+  WHERE (@fecha IS NULL OR c.fecha = @fecha)
+    AND (@carpeta IS NULL OR c.carpeta = @carpeta)
+  GROUP BY c.fecha, c.carpeta
+  ORDER BY c.fecha DESC, c.carpeta;
+
+  -- Detalle por archivo (incluye descripcion)
+  SELECT
+    c.fecha,
+    c.carpeta,
+    a.archivo AS archivo,
+    c.estado,
+    c.descripcion,
+    c.fecha_proceso
+  FROM cics_cargas c
+  INNER JOIN cics_archivos a ON a.id = c.archivo
+  WHERE (@fecha IS NULL OR c.fecha = @fecha)
+    AND (@carpeta IS NULL OR c.carpeta = @carpeta)
+  ORDER BY c.fecha DESC, c.carpeta, a.archivo;
+
+  -- Solo archivos no procesados
+  SELECT
+    c.fecha,
+    c.carpeta,
+    a.archivo AS archivo,
+    c.descripcion,
+    c.fecha_proceso
+  FROM cics_cargas c
+  INNER JOIN cics_archivos a ON a.id = c.archivo
+  WHERE c.estado = 'NO PROCESADA'
+    AND (@fecha IS NULL OR c.fecha = @fecha)
+    AND (@carpeta IS NULL OR c.carpeta = @carpeta)
+  ORDER BY c.fecha DESC, c.carpeta, a.archivo;
+
+## 18) Historial de cambios
+
+### v1.3.0 - 2026-06-01
+
+Cambios principales:
+
+- Procesamiento parcial por archivo dentro de cada carpeta de fecha.
+- Si un TXT falla validacion de fecha, se marca NO PROCESADA sin bloquear los demas.
+- Control de carga por archivo en cics_cargas.
+- cics_cargas.archivo ahora guarda el id de cics_archivos (no el nombre literal).
+- Se agrega descripcion operativa por archivo en cics_cargas.
 
 ### v1.2.0 - 2026-05-29
 

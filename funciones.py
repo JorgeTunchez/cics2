@@ -130,13 +130,13 @@ def clean_segment_title(title: str) -> str:
 
 
 # Define una función para obtener la fecha del encabezado de un archivo, buscando un patrón específico y formateando la fecha encontrada
-def obtener_fecha_encabezado(file_path: Path) -> str:
+def obtener_fecha_encabezado(file_path: Path, fecha_esperada: str | None = None) -> str:
     """
     Busca la fecha en el encabezado del archivo.
     Retorna la fecha en formato YYYY-MM-DD.
-    Soporta:
-      - DD/MM/YYYY
-      - MM/DD/YYYY
+        Soporta DD/MM/YYYY y MM/DD/YYYY.
+        Si la fecha es ambigua (p. ej. 05/04/2026) y se recibe fecha_esperada,
+        se prioriza el formato que coincida con esa fecha.
     """
     patron = re.compile(r"Date\s+(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
 
@@ -151,22 +151,30 @@ def obtener_fecha_encabezado(file_path: Path) -> str:
                 fecha_txt = m.group(1).strip()
 
                 formatos = ["%d/%m/%Y", "%m/%d/%Y"]
+                fechas_parseadas = []
                 for fmt in formatos:
                     try:
                         fecha_obj = datetime.strptime(fecha_txt, fmt)
-                        return fecha_obj.strftime("%Y-%m-%d")
+                        fechas_parseadas.append(fecha_obj.strftime("%Y-%m-%d"))
                     except ValueError:
                         continue
 
-                raise ValueError(
-                    f"La fecha '{fecha_txt}' del archivo {file_path.name} no coincide con formatos esperados."
-                )
+                if not fechas_parseadas:
+                    raise ValueError(
+                        f"La fecha '{fecha_txt}' del archivo {file_path.name} no coincide con formatos esperados."
+                    )
+
+                if fecha_esperada and fecha_esperada in fechas_parseadas:
+                    return fecha_esperada
+
+                # Si no hay referencia de carpeta o no coincide, conservar comportamiento determinista.
+                return fechas_parseadas[0]
 
     raise ValueError(f"No se encontró la fecha en el encabezado del archivo: {file_path.name}")
 
 
 # Genera archivos JSON a partir de los archivos TXT en el directorio de reportes, extrayendo solo los segmentos permitidos y guardando el resultado en el directorio de salida
-def validar_fecha_unica_archivos(directorio_reportes: Path) -> str:
+def validar_fecha_unica_archivos(directorio_reportes: Path, fecha_esperada: str | None = None) -> str:
     """
     Recorre todos los .TXT del directorio y valida que tengan la misma fecha.
     Retorna la fecha única en formato YYYY-MM-DD.
@@ -180,7 +188,7 @@ def validar_fecha_unica_archivos(directorio_reportes: Path) -> str:
     fechas_por_archivo = {}
 
     for archivo in archivos:
-        fecha = obtener_fecha_encabezado(archivo)
+        fecha = obtener_fecha_encabezado(archivo, fecha_esperada=fecha_esperada)
         fechas_por_archivo[archivo.name] = fecha
 
     fechas_unicas = sorted(set(fechas_por_archivo.values()))
@@ -3115,35 +3123,293 @@ def obtener_carpetas_fecha_ordenadas(directorio_entrada: Path) -> list[tuple[str
     return carpetas
 
 
-# Función para validar si una carpeta ya fue procesada, consultando la tabla cics_cargas por una combinación de fecha, nombre de carpeta y estado 'PROCESADO'.
-def carpeta_ya_procesada(fecha_carpeta: str, nombre_carpeta: str) -> bool:
+# Garantiza que la tabla cics_cargas exista con las columnas requeridas por el proceso.
+def asegurar_tabla_cics_cargas() -> None:
     conn = conectar_base_datos()
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT COUNT(*)
+        IF OBJECT_ID('dbo.cics_cargas', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.cics_cargas
+            (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                fecha DATE NOT NULL,
+                carpeta NVARCHAR(100) NOT NULL,
+                archivo INT NOT NULL,
+                fecha_proceso DATETIME NOT NULL DEFAULT GETDATE(),
+                estado NVARCHAR(20) NOT NULL DEFAULT 'PROCESADO',
+                descripcion NVARCHAR(255) NOT NULL DEFAULT 'carga correcta'
+            );
+        END
+    """)
+
+    cursor.execute("""
+        IF COL_LENGTH('dbo.cics_cargas', 'archivo') IS NULL
+        BEGIN
+            ALTER TABLE dbo.cics_cargas
+            ADD archivo INT NULL;
+        END
+    """)
+
+    cursor.execute("""
+        IF COL_LENGTH('dbo.cics_cargas', 'archivo_id_tmp') IS NULL
+        BEGIN
+            ALTER TABLE dbo.cics_cargas
+            ADD archivo_id_tmp INT NULL;
+        END
+    """)
+
+    cursor.execute("""
+        IF EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = 'UX_cics_cargas_fecha_carpeta'
+              AND object_id = OBJECT_ID('dbo.cics_cargas')
+        )
+        BEGIN
+            DROP INDEX UX_cics_cargas_fecha_carpeta ON dbo.cics_cargas;
+        END
+    """)
+
+    cursor.execute("""
+        IF EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = 'UX_cics_cargas_fecha_carpeta_archivo'
+              AND object_id = OBJECT_ID('dbo.cics_cargas')
+        )
+        BEGIN
+            DROP INDEX UX_cics_cargas_fecha_carpeta_archivo ON dbo.cics_cargas;
+        END
+    """)
+
+    # Migra columna archivo desde texto (nombre) a entero (id de cics_archivos) si aún no se convirtió.
+    cursor.execute("""
+        DECLARE @tipo_archivo SYSNAME;
+        SELECT @tipo_archivo = t.name
+        FROM sys.columns c
+        JOIN sys.types t ON c.user_type_id = t.user_type_id
+        WHERE c.object_id = OBJECT_ID('dbo.cics_cargas')
+          AND c.name = 'archivo';
+
+        IF @tipo_archivo IN ('nvarchar', 'varchar', 'nchar', 'char')
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM cics_archivos WHERE UPPER(archivo) = 'SIN_ARCHIVO')
+                INSERT INTO cics_archivos (archivo) VALUES ('SIN_ARCHIVO');
+
+            INSERT INTO cics_archivos (archivo)
+            SELECT DISTINCT clave_archivo
+            FROM (
+                SELECT UPPER(REPLACE(REPLACE(LTRIM(RTRIM(CAST(archivo AS NVARCHAR(255)))), '.TXT', ''), '.JSON', '')) AS clave_archivo
+                FROM cics_cargas
+                WHERE archivo IS NOT NULL AND LTRIM(RTRIM(CAST(archivo AS NVARCHAR(255)))) <> ''
+            ) x
+            WHERE x.clave_archivo <> ''
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM cics_archivos a
+                    WHERE UPPER(a.archivo) = x.clave_archivo
+                );
+
+            UPDATE c
+            SET archivo_id_tmp = a.id
+            FROM cics_cargas c
+            JOIN cics_archivos a
+              ON UPPER(a.archivo) = UPPER(REPLACE(REPLACE(LTRIM(RTRIM(CAST(c.archivo AS NVARCHAR(255)))), '.TXT', ''), '.JSON', ''));
+
+            UPDATE c
+            SET archivo_id_tmp = a.id
+            FROM cics_cargas c
+            JOIN cics_archivos a ON UPPER(a.archivo) = 'SIN_ARCHIVO'
+            WHERE c.archivo_id_tmp IS NULL;
+
+            DECLARE @dc_name NVARCHAR(128);
+            SELECT @dc_name = dc.name
+            FROM sys.default_constraints dc
+            JOIN sys.columns col
+              ON dc.parent_object_id = col.object_id
+             AND dc.parent_column_id = col.column_id
+            WHERE dc.parent_object_id = OBJECT_ID('dbo.cics_cargas')
+              AND col.name = 'archivo';
+
+            IF @dc_name IS NOT NULL
+                EXEC('ALTER TABLE dbo.cics_cargas DROP CONSTRAINT [' + @dc_name + ']');
+
+            ALTER TABLE dbo.cics_cargas DROP COLUMN archivo;
+            EXEC sp_rename 'dbo.cics_cargas.archivo_id_tmp', 'archivo', 'COLUMN';
+        END
+    """)
+
+    cursor.execute("""
+        IF COL_LENGTH('dbo.cics_cargas', 'archivo_id_tmp') IS NOT NULL
+        BEGIN
+            ALTER TABLE dbo.cics_cargas DROP COLUMN archivo_id_tmp;
+        END
+    """)
+
+    cursor.execute("""
+        IF COL_LENGTH('dbo.cics_cargas', 'descripcion') IS NULL
+        BEGIN
+            ALTER TABLE dbo.cics_cargas
+            ADD descripcion NVARCHAR(255) NOT NULL
+                CONSTRAINT DF_cics_cargas_descripcion DEFAULT 'carga correcta' WITH VALUES;
+        END
+    """)
+
+    cursor.execute("""
+        IF EXISTS (
+            SELECT 1
+            FROM sys.columns
+            WHERE object_id = OBJECT_ID('dbo.cics_cargas')
+              AND name = 'archivo'
+              AND is_nullable = 1
+        )
+        BEGIN
+            ALTER TABLE dbo.cics_cargas ALTER COLUMN archivo INT NOT NULL;
+        END
+    """)
+
+    cursor.execute("""
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes
+            WHERE name = 'UX_cics_cargas_fecha_carpeta_archivo'
+              AND object_id = OBJECT_ID('dbo.cics_cargas')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_cics_cargas_fecha_carpeta_archivo
+            ON dbo.cics_cargas(fecha, carpeta, archivo);
+        END
+    """)
+
+    cursor.execute("""
+                DECLARE @tipo_archivo_fk SYSNAME;
+                SELECT @tipo_archivo_fk = t.name
+                FROM sys.columns c
+                JOIN sys.types t ON c.user_type_id = t.user_type_id
+                WHERE c.object_id = OBJECT_ID('dbo.cics_cargas')
+                    AND c.name = 'archivo';
+
+                IF @tipo_archivo_fk = 'int' AND NOT EXISTS (
+            SELECT 1
+            FROM sys.foreign_keys
+            WHERE name = 'FK_cics_cargas_archivo'
+              AND parent_object_id = OBJECT_ID('dbo.cics_cargas')
+        )
+        BEGIN
+            ALTER TABLE dbo.cics_cargas
+            ADD CONSTRAINT FK_cics_cargas_archivo
+            FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
+        END
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def normalizar_descripcion_carga(descripcion: str) -> str:
+    texto = re.sub(r"\s+", " ", str(descripcion or "").strip())
+    if not texto:
+        return "sin descripcion"
+    return texto[:255]
+
+
+def normalizar_archivo_carga(nombre_archivo: str) -> str:
+    texto = str(nombre_archivo or "").strip().upper()
+    if not texto:
+        return "SIN_ARCHIVO"
+    return texto.replace(".TXT", "").replace(".JSON", "")[:255]
+
+
+# Función para validar si una carpeta ya fue procesada, consultando la tabla cics_cargas por una combinación de fecha, nombre de carpeta y estado 'PROCESADO'.
+def carpeta_ya_procesada(
+    fecha_carpeta: str,
+    nombre_carpeta: str,
+    archivos_esperados: list[str] | None = None,
+) -> bool:
+    asegurar_tabla_cics_cargas()
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT archivo
         FROM cics_cargas
         WHERE fecha = ? AND carpeta = ? AND estado = 'PROCESADO'
     """, (fecha_carpeta, nombre_carpeta))
 
-    row = cursor.fetchone()
+    archivos_procesados = {
+        int(row[0])
+        for row in cursor.fetchall()
+        if row and row[0] is not None
+    }
+
+    if not archivos_esperados:
+        conn.close()
+        return len(archivos_procesados) > 0
+
+    esperados = {
+        upsert_archivo(cursor, normalizar_archivo_carga(n))
+        for n in archivos_esperados
+    }
     conn.close()
+    return bool(esperados) and esperados.issubset(archivos_procesados)
 
-    return (row[0] or 0) > 0
 
-
-# Función para registrar una carpeta como procesada, insertando un nuevo registro en la tabla cics_cargas con la fecha, nombre de carpeta y estado 'PROCESADO'.
-def registrar_carpeta_procesada(fecha_carpeta: str, nombre_carpeta: str) -> None:
+# Registra o actualiza el estado de procesamiento de una carpeta.
+def registrar_estado_carpeta(
+    fecha_carpeta: str,
+    nombre_carpeta: str,
+    estado: str,
+    descripcion: str,
+    nombre_archivo: str = "SIN_ARCHIVO",
+) -> None:
+    asegurar_tabla_cics_cargas()
     conn = conectar_base_datos()
     cursor = conn.cursor()
 
+    descripcion_normalizada = normalizar_descripcion_carga(descripcion)
+    archivo_nombre_normalizado = normalizar_archivo_carga(nombre_archivo)
+    archivo_id = upsert_archivo(cursor, archivo_nombre_normalizado)
+
     cursor.execute("""
-        INSERT INTO cics_cargas (fecha, carpeta, estado)
-        VALUES (?, ?, 'PROCESADO')
-    """, (fecha_carpeta, nombre_carpeta))
+        SELECT estado
+        FROM cics_cargas
+        WHERE fecha = ? AND carpeta = ? AND archivo = ?
+    """, (fecha_carpeta, nombre_carpeta, archivo_id))
+
+    row = cursor.fetchone()
+    estado_actual = str(row[0]).strip().upper() if row and row[0] else None
+
+    if estado_actual == "PROCESADO" and estado == "NO PROCESADA":
+        conn.close()
+        return
+
+    cursor.execute("""
+        UPDATE cics_cargas
+        SET fecha_proceso = GETDATE(), estado = ?, descripcion = ?
+        WHERE fecha = ? AND carpeta = ? AND archivo = ?
+    """, (estado, descripcion_normalizada, fecha_carpeta, nombre_carpeta, archivo_id))
+
+    if cursor.rowcount == 0:
+        cursor.execute("""
+            INSERT INTO cics_cargas (fecha, carpeta, archivo, estado, descripcion)
+            VALUES (?, ?, ?, ?, ?)
+        """, (fecha_carpeta, nombre_carpeta, archivo_id, estado, descripcion_normalizada))
 
     conn.commit()
     conn.close()
+
+
+# Función para registrar una carpeta como procesada, insertando un nuevo registro en la tabla cics_cargas con la fecha, nombre de carpeta y estado 'PROCESADO'.
+def registrar_carpeta_procesada(fecha_carpeta: str, nombre_carpeta: str, nombre_archivo: str) -> None:
+    registrar_estado_carpeta(
+        fecha_carpeta,
+        nombre_carpeta,
+        "PROCESADO",
+        "carga correcta",
+        nombre_archivo=nombre_archivo,
+    )
     
 
 def get_storage_domain_subpool_forced_columns():

@@ -827,13 +827,20 @@ CREATE TABLE dbo.cics_cargas
     id INT IDENTITY(1,1) PRIMARY KEY,
     fecha DATE NOT NULL,
     carpeta NVARCHAR(100) NOT NULL,
+    archivo INT NOT NULL,
     fecha_proceso DATETIME NOT NULL DEFAULT GETDATE(),
-    estado NVARCHAR(20) NOT NULL DEFAULT 'PROCESADO'
+    estado NVARCHAR(20) NOT NULL DEFAULT 'PROCESADO',
+    descripcion NVARCHAR(255) NOT NULL DEFAULT 'carga correcta'
 );
 GO
 
-CREATE UNIQUE INDEX UX_cics_cargas_fecha_carpeta
-ON dbo.cics_cargas(fecha, carpeta);
+CREATE UNIQUE INDEX UX_cics_cargas_fecha_carpeta_archivo
+ON dbo.cics_cargas(fecha, carpeta, archivo);
+GO
+
+ALTER TABLE dbo.cics_cargas
+ADD CONSTRAINT FK_cics_cargas_archivo
+FOREIGN KEY (archivo) REFERENCES dbo.cics_archivos(id);
 GO
 
 
