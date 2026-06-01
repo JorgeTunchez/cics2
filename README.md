@@ -62,7 +62,7 @@ Archivos principales:
 
 Carpetas funcionales:
 
-- ENTRADA: contiene subcarpetas con nombre YYYY-MM-DD y 6 archivos TXT por fecha.
+- ENTRADA: contiene subcarpetas con nombre YYYY-MM-DD o YYYY_MM_DD y archivos TXT por fecha.
 - SALIDA: contiene subcarpetas YYYY-MM-DD con los JSON generados.
 
 ## 4) Preparacion del entorno
@@ -115,12 +115,13 @@ Notas:
 
 Ruta esperada:
 
-    ENTRADA\YYYY-MM-DD\*.TXT
+  ENTRADA\YYYY-MM-DD\*.TXT
+  ENTRADA\YYYY_MM_DD\*.TXT
 
 Reglas validadas por el proceso:
 
-1. Solo se procesan carpetas con formato de fecha YYYY-MM-DD.
-2. Cada carpeta debe contener exactamente 6 archivos TXT.
+1. Se procesan carpetas con formato de fecha YYYY-MM-DD o YYYY_MM_DD.
+2. Si una carpeta no tiene los 6 TXT esperados, se registra advertencia y se procesan los archivos disponibles.
 3. La fecha del encabezado se valida por archivo (no se descarta toda la carpeta por un solo archivo invalido).
 4. Solo se procesan los TXT cuya fecha del encabezado coincide con la carpeta.
 5. Los TXT con fecha faltante o invalida se registran como NO PROCESADA en cics_cargas.
@@ -156,7 +157,7 @@ Salida de consola esperada:
 
 Por cada carpeta de fecha:
 
-1. Verifica cantidad esperada de TXT en la carpeta (6).
+1. Verifica cantidad esperada de TXT en la carpeta (6) y, si faltan, emite advertencia sin bloquear.
 2. Valida fecha por cada archivo y separa archivos validos e invalidos.
 3. Registra en cics_cargas como NO PROCESADA los archivos invalidos (con descripcion corta).
 4. Si hay archivos validos ya cargados, re-genera JSON y ejecuta backfills solo para esos archivos.

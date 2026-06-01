@@ -208,9 +208,9 @@ def validar_fecha_unica_archivos(directorio_reportes: Path, fecha_esperada: str 
 def validar_cantidad_archivos(directorio_reportes: Path, cantidad_esperada: int = 6) -> None:
     archivos = [p for p in directorio_reportes.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
     if len(archivos) != cantidad_esperada:
-        raise ValueError(
-            f"Se esperaban {cantidad_esperada} archivos .TXT en ENTRADA, "
-            f"pero se encontraron {len(archivos)}."
+        print(
+            f"[WARN] Se esperaban {cantidad_esperada} archivos .TXT en ENTRADA, "
+            f"pero se encontraron {len(archivos)}. Se procesarán los disponibles."
         )
 
 
