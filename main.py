@@ -1,5 +1,8 @@
 import os
 import json
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from datetime import date, datetime
 from pathlib import Path
 from funciones import *
@@ -8,10 +11,131 @@ from funciones import *
 # CONFIGURACIÓN
 # =========================
 PROJECT_ROOT = Path(__file__).parent
-DIRECTORIO_REPORTES = PROJECT_ROOT / "ENTRADA"
-DIRECTORIO_SALIDA = PROJECT_ROOT / "SALIDA"
+
+# Intenta leer las rutas desde la tabla cics_configuracion.
+# Si la tabla no existe o la clave está vacía, usa los valores por defecto locales.
+def _resolver_ruta(clave: str) -> Path:
+    from funciones import asegurar_tabla_cics_configuracion, obtener_configuracion
+
+    defaults_por_clave = {
+        "ruta_entrada": "ENTRADA",
+        "ruta_salida": "SALIDA",
+    }
+
+    if clave not in defaults_por_clave:
+        raise ValueError(
+            f"Clave de configuración no soportada: {clave}. "
+            f"Use una de: {', '.join(defaults_por_clave.keys())}"
+        )
+
+    try:
+        asegurar_tabla_cics_configuracion()
+    except Exception:
+        pass
+
+    default_relativo = defaults_por_clave[clave]
+    valor = obtener_configuracion(clave, default=default_relativo)
+    if valor is None or not str(valor).strip():
+        valor = default_relativo
+
+    ruta = Path(valor)
+    # Si la ruta es relativa, se ancla al directorio del proyecto
+    if not ruta.is_absolute():
+        ruta = PROJECT_ROOT / ruta
+    return ruta
+
+DIRECTORIO_REPORTES = _resolver_ruta("ruta_entrada")
+DIRECTORIO_SALIDA   = _resolver_ruta("ruta_salida")
 
 DIRECTORIO_SALIDA.mkdir(exist_ok=True)
+
+
+def _config_bool(clave: str, default: bool = False) -> bool:
+    valor = obtener_configuracion(clave, default="true" if default else "false")
+    if valor is None:
+        return default
+    return str(valor).strip().lower() in {"1", "true", "t", "si", "sí", "yes", "y"}
+
+
+def _config_lista_correos(clave: str) -> list[str]:
+    valor = obtener_configuracion(clave, default="")
+    if valor is None:
+        return []
+    bruto = str(valor).replace(";", ",")
+    return [x.strip() for x in bruto.split(",") if x.strip()]
+
+
+def _enviar_notificacion_fin_proceso(resumen: dict) -> None:
+    destinatarios = _config_lista_correos("correo_notificacion_cics")
+    if not destinatarios:
+        print("[WARN] No hay destinatarios en correo_notificacion_cics. Se omite notificacion por correo.")
+        return
+
+    smtp_host = os.getenv("CICS_SMTP_HOST", "10.1.1.144")
+    smtp_port = int(os.getenv("CICS_SMTP_PORT", "25"))
+    remitente = os.getenv("CICS_EMAIL_REMITENTE", "controlcodigo@bi.com.gt")
+
+    asunto = (
+        f"Depuracion CICS finalizada | {resumen.get('fin', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}"
+    )
+
+    estado_global = "sin novedades"
+    if resumen.get("errores", 0) > 0:
+        estado_global = "finalizo con errores"
+    elif resumen.get("procesadas", 0) > 0:
+        estado_global = "finalizo correctamente"
+    elif resumen.get("omitidas", 0) > 0:
+        estado_global = "no proceso nuevas carpetas porque estaban omitidas"
+
+    lineas = [
+        "La depuracion de CICS ha concluido.",
+        f"Estado general: {estado_global}.",
+        "",
+        "Resumen de ejecucion:",
+        f"- Inicio: {resumen.get('inicio', '')}",
+        f"- Fin: {resumen.get('fin', '')}",
+        f"- Modo: {resumen.get('modo', '')}",
+        f"- Carpeta entrada: {resumen.get('directorio_reportes', '')}",
+        f"- Carpeta salida: {resumen.get('directorio_salida', '')}",
+        f"- Carpetas consideradas: {resumen.get('carpetas_consideradas', 0)}",
+        f"- Carpetas procesadas: {resumen.get('procesadas', 0)}",
+        f"- Carpetas omitidas: {resumen.get('omitidas', 0)}",
+        f"- Carpetas sin archivos validos: {resumen.get('sin_validos', 0)}",
+        f"- Errores: {resumen.get('errores', 0)}",
+        "",
+        "Detalle por carpeta:",
+    ]
+
+    detalle = resumen.get("detalle", [])
+    if not detalle:
+        lineas.append("- Sin detalle")
+    else:
+        for item in detalle:
+            lineas.append(
+                f"- {item.get('fecha', '')} | {item.get('carpeta', '')} | {item.get('estado', '')} | {item.get('mensaje', '')}"
+            )
+
+    cuerpo = "\n".join(lineas)
+
+    # Formato MIME, equivalente al patrón usado en el proyecto Django.
+    mensaje = MIMEMultipart()
+    mensaje["From"] = remitente
+    mensaje["To"] = ", ".join(destinatarios)
+    mensaje["Subject"] = asunto
+    mensaje.attach(MIMEText(cuerpo, "plain", "utf-8"))
+
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=20) as server:
+        code, response = server.ehlo()
+        print(f"[INFO] SMTP EHLO -> codigo={code} respuesta={response!r}")
+        rechazados = server.sendmail(remitente, destinatarios, mensaje.as_string())
+
+    if rechazados:
+        raise RuntimeError(f"Destinatarios rechazados por SMTP: {rechazados}")
+
+    print(
+        f"[OK] Correo de notificacion aceptado por SMTP {smtp_host}:{smtp_port} "
+        f"para: {', '.join(destinatarios)}"
+    )
 
 
 def normalizar_archivos_permitidos(archivos_permitidos: list[str] | None) -> set[str] | None:
@@ -458,14 +582,22 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
 
     if not archivos_validos:
         print(f"[WARN] Ningún archivo válido para procesar en {nombre_carpeta}.")
-        return
+        return {
+            "estado": "SIN_VALIDOS",
+            "mensaje": "sin archivos validos",
+            "archivos_validos": 0,
+        }
 
     fecha_encabezado = fecha_carpeta
     print(f"Fecha validada desde encabezados: {fecha_encabezado} (archivos válidos: {len(archivos_validos)})")
 
     if carpeta_ya_procesada(fecha_carpeta, nombre_carpeta, archivos_validos):
         print(f"Carpeta ya cargada: {nombre_carpeta}. Se omite completamente.")
-        return
+        return {
+            "estado": "OMITIDA",
+            "mensaje": "carpeta ya cargada",
+            "archivos_validos": len(archivos_validos),
+        }
 
     cantidad_registros = validar_carga_fecha(fecha_encabezado)
     if cantidad_registros > 0:
@@ -473,7 +605,11 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
             f"Ya existen {cantidad_registros} registros en base de datos "
             f"para la fecha {fecha_encabezado}. Se omite completamente esta carpeta."
         )
-        return
+        return {
+            "estado": "OMITIDA",
+            "mensaje": f"fecha ya cargada ({cantidad_registros} registros)",
+            "archivos_validos": len(archivos_validos),
+        }
 
     generar_json_desde_txt(ruta_carpeta, directorio_salida_fecha, archivos_permitidos=archivos_validos)
     insertar_bd_desde_json(directorio_salida_fecha, fecha_encabezado, archivos_permitidos=archivos_validos)
@@ -481,6 +617,11 @@ def procesar_carpeta_fecha(fecha_carpeta: str, ruta_carpeta: Path):
         registrar_carpeta_procesada(fecha_encabezado, nombre_carpeta, nombre_archivo)
 
     print(f"[OK] Carpeta procesada correctamente: {nombre_carpeta}")
+    return {
+        "estado": "PROCESADA",
+        "mensaje": "procesamiento completado",
+        "archivos_validos": len(archivos_validos),
+    }
 
 
 def resumir_error_carga(error: Exception) -> str:
@@ -491,8 +632,26 @@ def resumir_error_carga(error: Exception) -> str:
 
 
 def main():
+    inicio = datetime.now()
+    resumen = {
+        "inicio": inicio.strftime("%Y-%m-%d %H:%M:%S"),
+        "fin": "",
+        "modo": "",
+        "directorio_reportes": str(DIRECTORIO_REPORTES),
+        "directorio_salida": str(DIRECTORIO_SALIDA),
+        "carpetas_consideradas": 0,
+        "procesadas": 0,
+        "omitidas": 0,
+        "sin_validos": 0,
+        "errores": 0,
+        "detalle": [],
+    }
+
     if not DIRECTORIO_REPORTES.exists():
         raise FileNotFoundError(f"No existe el directorio: {DIRECTORIO_REPORTES}")
+
+    # Asegura defaults de configuración (incluye analisis_completo).
+    asegurar_tabla_cics_configuracion()
 
     carpetas_fecha = obtener_carpetas_fecha_ordenadas(DIRECTORIO_REPORTES)
 
@@ -500,9 +659,42 @@ def main():
         print("No se encontraron carpetas con formato YYYY-MM-DD en ENTRADA.")
         return
 
+    analisis_completo = _config_bool("analisis_completo", default=False)
+    if analisis_completo:
+        resumen["modo"] = "analisis_completo=true"
+        print("Modo analisis_completo=true: se procesaran todas las carpetas disponibles.")
+    else:
+        hoy = date.today().isoformat()
+        carpetas_fecha = [par for par in carpetas_fecha if par[0] <= hoy][:10]
+        resumen["modo"] = "analisis_completo=false"
+        print(
+            "Modo analisis_completo=false: "
+            "se procesaran solo las ultimas 10 fechas desde hoy. "
+            f"Carpetas seleccionadas: {len(carpetas_fecha)}"
+        )
+
+    resumen["carpetas_consideradas"] = len(carpetas_fecha)
+
     for fecha_carpeta, ruta_carpeta in carpetas_fecha:
         try:
-            procesar_carpeta_fecha(fecha_carpeta, ruta_carpeta)
+            resultado = procesar_carpeta_fecha(fecha_carpeta, ruta_carpeta)
+            estado = (resultado or {}).get("estado", "DESCONOCIDO")
+            mensaje = (resultado or {}).get("mensaje", "sin mensaje")
+            resumen["detalle"].append(
+                {
+                    "fecha": fecha_carpeta,
+                    "carpeta": ruta_carpeta.name,
+                    "estado": estado,
+                    "mensaje": mensaje,
+                }
+            )
+
+            if estado == "PROCESADA":
+                resumen["procesadas"] += 1
+            elif estado == "OMITIDA":
+                resumen["omitidas"] += 1
+            elif estado == "SIN_VALIDOS":
+                resumen["sin_validos"] += 1
         except Exception as e:
             archivos_txt = sorted(
                 [p.name.upper() for p in ruta_carpeta.iterdir() if p.is_file() and p.suffix.upper() == ".TXT"]
@@ -515,12 +707,58 @@ def main():
                     resumir_error_carga(e),
                     nombre_archivo=nombre_archivo,
                 )
+            resumen["errores"] += 1
+            resumen["detalle"].append(
+                {
+                    "fecha": fecha_carpeta,
+                    "carpeta": ruta_carpeta.name,
+                    "estado": "ERROR",
+                    "mensaje": resumir_error_carga(e),
+                }
+            )
             print(f"[ERROR] Error procesando carpeta {ruta_carpeta.name}: {e}\n")
+
+    resumen["fin"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return resumen
 
 
 if __name__ == "__main__":
     print("\n\n\n****************************************")
     print(f"Proceso iniciado el dia {date.today().isoformat()} a las {datetime.now().strftime('%H:%M:%S')} horas\n")
-    main()
+    resumen_final = None
+    error_global = None
+    try:
+        resumen_final = main()
+    except Exception as e:
+        error_global = e
+        resumen_final = {
+            "inicio": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "fin": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "modo": "error_en_arranque",
+            "directorio_reportes": str(DIRECTORIO_REPORTES),
+            "directorio_salida": str(DIRECTORIO_SALIDA),
+            "carpetas_consideradas": 0,
+            "procesadas": 0,
+            "omitidas": 0,
+            "sin_validos": 0,
+            "errores": 1,
+            "detalle": [
+                {
+                    "fecha": "",
+                    "carpeta": "",
+                    "estado": "ERROR",
+                    "mensaje": resumir_error_carga(e),
+                }
+            ],
+        }
+    finally:
+        try:
+            _enviar_notificacion_fin_proceso(resumen_final or {})
+        except Exception as mail_error:
+            print(f"[WARN] No se pudo enviar correo de notificacion: {mail_error}")
+
+    if error_global is not None:
+        raise error_global
+
     print(f"\nProceso finalizado el dia {date.today().isoformat()} a las {datetime.now().strftime('%H:%M:%S')} horas\n")
     print("****************************************\n\n\n")

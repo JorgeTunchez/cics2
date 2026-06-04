@@ -3131,6 +3131,82 @@ def obtener_carpetas_fecha_ordenadas(directorio_entrada: Path) -> list[tuple[str
     return carpetas
 
 
+# ---------------------------------------------------------------------------
+# CONFIGURACIÓN DESDE BASE DE DATOS
+# ---------------------------------------------------------------------------
+
+def asegurar_tabla_cics_configuracion() -> None:
+    """Crea dbo.cics_configuracion si no existe e inserta valores por defecto."""
+    conn = conectar_base_datos()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        IF OBJECT_ID('dbo.cics_configuracion', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.cics_configuracion
+            (
+                id                 INT IDENTITY(1,1) PRIMARY KEY,
+                clave              NVARCHAR(100)  NOT NULL,
+                valor              NVARCHAR(500)  NOT NULL,
+                descripcion        NVARCHAR(255)  NULL,
+                activo             BIT            NOT NULL DEFAULT 1,
+                fecha_modificacion DATETIME       NOT NULL DEFAULT GETDATE()
+            );
+            CREATE UNIQUE INDEX UX_cics_configuracion_clave
+                ON dbo.cics_configuracion(clave);
+        END
+    """)
+
+    # Inserta valores por defecto solo si no existen
+    for clave, valor, desc in [
+        ("ruta_entrada", "ENTRADA", "Ruta de la carpeta de entrada de archivos TXT"),
+        ("ruta_salida",  "SALIDA",  "Ruta de la carpeta de salida de archivos JSON"),
+        (
+            "analisis_completo",
+            "false",
+            "Si esta en true procesa todas las carpetas; si esta en false solo procesa las ultimas 10 fechas desde la fecha actual"
+        ),
+        (
+            "correo_notificacion_cics",
+            "controlcodigo@bi.com.gt",
+            "Correo o lista de correos (separados por ; o ,) para notificacion de fin de depuracion CICS"
+        ),
+    ]:
+        cursor.execute("""
+            IF NOT EXISTS (SELECT 1 FROM dbo.cics_configuracion WHERE clave = ?)
+            BEGIN
+                INSERT INTO dbo.cics_configuracion (clave, valor, descripcion)
+                VALUES (?, ?, ?)
+            END
+        """, (clave, clave, valor, desc))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def obtener_configuracion(clave: str, default: str | None = None) -> str | None:
+    """
+    Lee un valor de dbo.cics_configuracion por su clave.
+    Devuelve `default` si la clave no existe o la tabla no existe.
+    Solo devuelve filas con activo = 1.
+    """
+    try:
+        conn = conectar_base_datos()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT valor FROM dbo.cics_configuracion WHERE clave = ? AND activo = 1",
+            (clave,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+
+# ---------------------------------------------------------------------------
 # Garantiza que la tabla cics_cargas exista con las columnas requeridas por el proceso.
 def asegurar_tabla_cics_cargas() -> None:
     conn = conectar_base_datos()
