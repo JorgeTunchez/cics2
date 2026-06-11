@@ -3171,6 +3171,11 @@ def asegurar_tabla_cics_configuracion() -> None:
             "controlcodigo@bi.com.gt",
             "Correo o lista de correos (separados por ; o ,) para notificacion de fin de depuracion CICS"
         ),
+        (
+            "limpiar_al_final",
+            "true",
+            "Si esta en true, limpia el contenido de las carpetas configuradas de entrada y salida al finalizar el proceso"
+        ),
     ]:
         cursor.execute("""
             IF NOT EXISTS (SELECT 1 FROM dbo.cics_configuracion WHERE clave = ?)

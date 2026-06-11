@@ -1,6 +1,7 @@
 import os
 import json
 import smtplib
+import shutil
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import date, datetime
@@ -136,6 +137,54 @@ def _enviar_notificacion_fin_proceso(resumen: dict) -> None:
         f"[OK] Correo de notificacion aceptado por SMTP {smtp_host}:{smtp_port} "
         f"para: {', '.join(destinatarios)}"
     )
+
+
+def _limpiar_contenido_directorio(directorio: Path) -> tuple[int, int]:
+    """
+    Elimina el contenido interno del directorio sin borrar el directorio raíz.
+    Retorna una tupla (eliminados, errores).
+    """
+    eliminados = 0
+    errores = 0
+
+    if not directorio.exists():
+        return eliminados, errores
+
+    for item in directorio.iterdir():
+        try:
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+            eliminados += 1
+        except Exception as e:
+            errores += 1
+            print(f"[WARN] No se pudo eliminar {item}: {e}")
+
+    return eliminados, errores
+
+
+def _limpiar_entrada_salida_al_final() -> None:
+    total_eliminados = 0
+    total_errores = 0
+
+    for ruta in [DIRECTORIO_REPORTES, DIRECTORIO_SALIDA]:
+        eliminados, errores = _limpiar_contenido_directorio(ruta)
+        total_eliminados += eliminados
+        total_errores += errores
+        print(
+            f"[INFO] Limpieza de {ruta}: eliminados={eliminados}, errores={errores}"
+        )
+
+    if total_errores == 0:
+        print(
+            f"[OK] Limpieza final completada. Elementos eliminados: {total_eliminados}"
+        )
+    else:
+        print(
+            f"[WARN] Limpieza final completada con errores. "
+            f"Eliminados={total_eliminados}, errores={total_errores}"
+        )
 
 
 def normalizar_archivos_permitidos(archivos_permitidos: list[str] | None) -> set[str] | None:
@@ -756,6 +805,15 @@ if __name__ == "__main__":
             _enviar_notificacion_fin_proceso(resumen_final or {})
         except Exception as mail_error:
             print(f"[WARN] No se pudo enviar correo de notificacion: {mail_error}")
+
+        limpiar_al_final = _config_bool("limpiar_al_final", default=True)
+        if limpiar_al_final:
+            try:
+                _limpiar_entrada_salida_al_final()
+            except Exception as cleanup_error:
+                print(f"[WARN] Ocurrio un error durante la limpieza final: {cleanup_error}")
+        else:
+            print("[INFO] limpiar_al_final=false. Se omite limpieza de ENTRADA y SALIDA.")
 
     if error_global is not None:
         raise error_global

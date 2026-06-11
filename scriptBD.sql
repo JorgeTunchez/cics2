@@ -929,5 +929,6 @@ VALUES
     ('ruta_entrada', 'ENTRADA', 'Ruta de la carpeta de entrada de archivos TXT. Puede ser absoluta o relativa al proyecto.'),
     ('ruta_salida',  'SALIDA',  'Ruta de la carpeta de salida de archivos JSON. Puede ser absoluta o relativa al proyecto.'),
     ('analisis_completo', 'false', 'Si esta en true procesa todas las carpetas; si esta en false solo procesa las ultimas 10 fechas desde la fecha actual.'),
-    ('correo_notificacion_cics', 'controlcodigo@bi.com.gt', 'Correo o lista de correos (separados por ; o ,) para notificacion de fin de depuracion CICS.');
+    ('correo_notificacion_cics', 'controlcodigo@bi.com.gt', 'Correo o lista de correos (separados por ; o ,) para notificacion de fin de depuracion CICS.'),
+    ('limpiar_al_final', 'true', 'Si esta en true, limpia el contenido de las carpetas configuradas de entrada y salida al finalizar el proceso.');
 GO
