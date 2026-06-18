@@ -23,6 +23,19 @@ def _is_debug_storage_enabled() -> bool:
         "on",
     }
 
+
+def _is_debug_header_date_enabled() -> bool:
+    """
+    Activa debug de extracción de fecha de encabezado con variable de entorno.
+    Valores truthy soportados: 1, true, yes, on.
+    """
+    return str(os.getenv("DEBUG_HEADER_DATE", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 # define una función para convertir un valor a entero o None si no es posible
 def to_int_or_none(value):
     if value is None:
@@ -138,37 +151,97 @@ def obtener_fecha_encabezado(file_path: Path, fecha_esperada: str | None = None)
         Si la fecha es ambigua (p. ej. 05/04/2026) y se recibe fecha_esperada,
         se prioriza el formato que coincida con esa fecha.
     """
-    patron = re.compile(r"Date\s+(\d{2}/\d{2}/\d{4})", re.IGNORECASE)
+    debug_header_date = _is_debug_header_date_enabled()
+
+    patrones = [
+        # Ejemplo común: Date 06/14/2026
+        re.compile(r"\bDate\b\s*[:=]?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", re.IGNORECASE),
+        # Fallback genérico: cualquier fecha en formato nn/nn/nnnn o nn-nn-nnnn
+        re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b"),
+    ]
 
     with file_path.open("r", encoding="utf-8", errors="ignore") as f:
-        for _ in range(20):
+        # Algunos reportes pueden incluir cabeceras extendidas; ampliar ventana de lectura.
+        lineas_leidas = 0
+        for _ in range(80):
             linea = f.readline()
             if not linea:
                 break
+            lineas_leidas += 1
 
-            m = patron.search(linea)
-            if m:
-                fecha_txt = m.group(1).strip()
+            # Limpia caracteres nulos que a veces aparecen en archivos transferidos.
+            linea = linea.replace("\x00", "")
 
-                formatos = ["%d/%m/%Y", "%m/%d/%Y"]
-                fechas_parseadas = []
-                for fmt in formatos:
-                    try:
-                        fecha_obj = datetime.strptime(fecha_txt, fmt)
-                        fechas_parseadas.append(fecha_obj.strftime("%Y-%m-%d"))
-                    except ValueError:
-                        continue
+            if debug_header_date and lineas_leidas <= 10:
+                print(
+                    f"[DEBUG_FECHA] {file_path.name} L{lineas_leidas}: "
+                    f"{linea.rstrip()[:220]}"
+                )
 
-                if not fechas_parseadas:
-                    raise ValueError(
-                        f"La fecha '{fecha_txt}' del archivo {file_path.name} no coincide con formatos esperados."
+            fecha_txt = None
+            for patron in patrones:
+                m = patron.search(linea)
+                if m:
+                    fecha_txt = m.group(1).strip()
+                    if debug_header_date:
+                        print(
+                            f"[DEBUG_FECHA] {file_path.name} match en L{lineas_leidas}: "
+                            f"{fecha_txt}"
+                        )
+                    break
+
+            if not fecha_txt:
+                continue
+
+            formatos = [
+                "%d/%m/%Y",
+                "%m/%d/%Y",
+                "%d-%m-%Y",
+                "%m-%d-%Y",
+                "%Y/%m/%d",
+                "%Y-%m-%d",
+                "%d/%m/%y",
+                "%m/%d/%y",
+            ]
+            fechas_parseadas = []
+            for fmt in formatos:
+                try:
+                    fecha_obj = datetime.strptime(fecha_txt, fmt)
+                    fechas_parseadas.append(fecha_obj.strftime("%Y-%m-%d"))
+                except ValueError:
+                    continue
+
+            if not fechas_parseadas:
+                raise ValueError(
+                    f"La fecha '{fecha_txt}' del archivo {file_path.name} no coincide con formatos esperados."
+                )
+
+            if debug_header_date:
+                print(
+                    f"[DEBUG_FECHA] {file_path.name} candidatos parseados: "
+                    f"{fechas_parseadas} | fecha_esperada={fecha_esperada}"
+                )
+
+            if fecha_esperada and fecha_esperada in fechas_parseadas:
+                if debug_header_date:
+                    print(
+                        f"[DEBUG_FECHA] {file_path.name} seleccionada por coincidencia con carpeta: "
+                        f"{fecha_esperada}"
                     )
+                return fecha_esperada
 
-                if fecha_esperada and fecha_esperada in fechas_parseadas:
-                    return fecha_esperada
+            # Si no hay referencia de carpeta o no coincide, conservar comportamiento determinista.
+            if debug_header_date:
+                print(
+                    f"[DEBUG_FECHA] {file_path.name} seleccionada por orden determinista: "
+                    f"{fechas_parseadas[0]}"
+                )
+            return fechas_parseadas[0]
 
-                # Si no hay referencia de carpeta o no coincide, conservar comportamiento determinista.
-                return fechas_parseadas[0]
+    if debug_header_date:
+        print(
+            f"[DEBUG_FECHA] {file_path.name} sin fecha detectada en primeras {lineas_leidas} lineas"
+        )
 
     raise ValueError(f"No se encontró la fecha en el encabezado del archivo: {file_path.name}")
 
@@ -5872,3 +5945,65 @@ def insert_statistics_row(
     except Exception as e:
         print(f"Statistics: error al insertar - {e}")
         return 0
+
+
+# ---------------------------------------------------------------------------
+# MODULO: DESCARGA DESDE FTP
+# ---------------------------------------------------------------------------
+
+import ftplib
+
+
+def conectar_ftp(servidor: str, usuario: str, password: str, timeout: int = 15) -> ftplib.FTP:
+    """Crea y devuelve una conexión FTP autenticada."""
+    ftp = ftplib.FTP(servidor, timeout=timeout)
+    ftp.login(usuario, password)
+    return ftp
+
+
+def listar_archivos_ftp(ftp: ftplib.FTP, directorio: str) -> list[str]:
+    """Cambia al directorio indicado y devuelve la lista de archivos."""
+    if directorio == "/":
+        return ftp.nlst("/")
+    ftp.cwd(directorio)
+    return ftp.nlst()
+
+
+def descargar_archivo_ftp(ftp: ftplib.FTP, directorio_remoto: str, nombre_archivo: str, ruta_destino: Path) -> bool:
+    """
+    Descarga un archivo específico desde FTP y lo guarda en ruta_destino.
+    Retorna True si se descargó exitosamente, False en caso contrario.
+    """
+    try:
+        ftp.cwd(directorio_remoto)
+        with open(ruta_destino, "wb") as archivo_local:
+            ftp.retrbinary(f"RETR {nombre_archivo}", archivo_local.write)
+        return True
+    except Exception as e:
+        print(f"[ERROR] No se pudo descargar {nombre_archivo}: {e}")
+        return False
+
+
+def descargar_archivos_ftp(ftp: ftplib.FTP, directorio_remoto: str, carpeta_local: str) -> list[str]:
+    """Descarga todos los archivos de un directorio remoto a una carpeta local."""
+    ftp.cwd(directorio_remoto)
+    archivos = [item for item in ftp.nlst() if item not in (".", "..")]
+
+    destino = Path(carpeta_local)
+    destino.mkdir(parents=True, exist_ok=True)
+
+    descargados: list[str] = []
+    for nombre_archivo in archivos:
+        ruta_destino = destino / nombre_archivo
+        if descargar_archivo_ftp(ftp, directorio_remoto, nombre_archivo, ruta_destino):
+            descargados.append(str(ruta_destino))
+
+    return descargados
+
+
+def cerrar_ftp(ftp: ftplib.FTP) -> None:
+    """Cierra la conexión FTP de forma segura."""
+    try:
+        ftp.quit()
+    except Exception:
+        ftp.close()

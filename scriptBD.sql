@@ -930,5 +930,10 @@ VALUES
     ('ruta_salida',  'SALIDA',  'Ruta de la carpeta de salida de archivos JSON. Puede ser absoluta o relativa al proyecto.'),
     ('analisis_completo', 'false', 'Si esta en true procesa todas las carpetas; si esta en false solo procesa las ultimas 10 fechas desde la fecha actual.'),
     ('correo_notificacion_cics', 'controlcodigo@bi.com.gt', 'Correo o lista de correos (separados por ; o ,) para notificacion de fin de depuracion CICS.'),
-    ('limpiar_al_final', 'true', 'Si esta en true, limpia el contenido de las carpetas configuradas de entrada y salida al finalizar el proceso.');
+    ('limpiar_al_final', 'true', 'Si esta en true, limpia el contenido de las carpetas configuradas de entrada y salida al finalizar el proceso.'),
+    ('ftp_servidor', '10.2.213.169', 'Servidor FTP de donde descargar archivos CICS.'),
+    ('ftp_usuario', 'ftp_zseries', 'Usuario para autenticacion en servidor FTP.'),
+    ('ftp_password', 'Banco2024.', 'Contrasena para autenticacion en servidor FTP.'),
+    ('ftp_directorio', '/FTP/BitacorasCICS', 'Directorio remoto en FTP donde se encuentran los archivos CICS.'),
+    ('descargar_desde_ftp', 'true', 'Si esta en true, descarga archivos desde FTP antes de procesar.');
 GO

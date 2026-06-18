@@ -680,7 +680,171 @@ def resumir_error_carga(error: Exception) -> str:
     return mensaje[:255]
 
 
+def descargar_y_preparar_desde_ftp() -> dict:
+    """
+    Descarga archivos desde FTP y los organiza en carpetas ENTRADA/YYYY-MM-DD
+    basándose en la fecha interna del archivo (no en la del nombre).
+    
+    Retorna un dict con estadísticas de descarga:
+    {
+        "descargados": int,
+        "errores": int,
+        "detalles": list of dicts con info de cada archivo procesado
+    }
+    """
+    resumen_ftp = {
+        "descargados": 0,
+        "errores": 0,
+        "detalles": []
+    }
+    
+    # Verifica si está habilitada la descarga FTP
+    descargar_ftp = _config_bool("descargar_desde_ftp", default=True)
+    if not descargar_ftp:
+        print("[INFO] descargar_desde_ftp=false. Se omite descarga FTP.")
+        return resumen_ftp
+    
+    try:
+        # Lee configuración FTP desde BD
+        ftp_servidor = obtener_configuracion("ftp_servidor")
+        ftp_usuario = obtener_configuracion("ftp_usuario")
+        ftp_password = obtener_configuracion("ftp_password")
+        ftp_directorio = obtener_configuracion("ftp_directorio")
+        
+        print(f"\n[INFO] Conectando a FTP {ftp_servidor}...")
+        ftp = conectar_ftp(ftp_servidor, ftp_usuario, ftp_password)
+        print(f"[OK] Conectado a FTP: {ftp.getwelcome()}")
+        
+        try:
+            # Lista archivos en directorio remoto
+            print(f"[INFO] Listando archivos en {ftp_directorio}...")
+            archivos_remotos = listar_archivos_ftp(ftp, ftp_directorio)
+            archivos_cics = [a for a in archivos_remotos if a.upper().endswith(".TXT")]
+            print(f"[OK] {len(archivos_cics)} archivos encontrados")
+            
+            if not archivos_cics:
+                print("[WARN] No se encontraron archivos .TXT en FTP")
+                return resumen_ftp
+            
+            # Crea carpeta temporal para descarga
+            carpeta_temporal = PROJECT_ROOT / ".ftp_temp"
+            carpeta_temporal.mkdir(exist_ok=True)
+            
+            # Descarga cada archivo y lo organiza por fecha
+            for nombre_archivo in archivos_cics:
+                try:
+                    # Descarga archivo
+                    ruta_temporal = carpeta_temporal / nombre_archivo
+                    print(f"\n[DESCARGA] {nombre_archivo}...", end=" ")
+                    
+                    ftp.cwd(ftp_directorio)
+                    with open(ruta_temporal, "wb") as f:
+                        ftp.retrbinary(f"RETR {nombre_archivo}", f.write)
+                    print("OK")
+                    
+                    # Extrae fecha interna del archivo
+                    try:
+                        fecha_interna = obtener_fecha_encabezado(ruta_temporal)
+                        if fecha_interna is None:
+                            # Si no encontró fecha interna, tenta parsear la del nombre
+                            fecha_interna = _extraer_fecha_nombre_archivo(nombre_archivo)
+                        
+                        if fecha_interna is None:
+                            print(f"  [WARN] No se pudo extraer fecha del archivo {nombre_archivo}. Se omite.")
+                            resumen_ftp["errores"] += 1
+                            resumen_ftp["detalles"].append({
+                                "archivo": nombre_archivo,
+                                "estado": "OMITIDO",
+                                "motivo": "No se encontró fecha interna ni en nombre"
+                            })
+                            continue
+                        
+                        # Crea carpeta de destino con la fecha correcta
+                        carpeta_destino = DIRECTORIO_REPORTES / fecha_interna
+                        carpeta_destino.mkdir(parents=True, exist_ok=True)
+                        
+                        # Copia archivo a su carpeta de fecha
+                        ruta_destino = carpeta_destino / nombre_archivo
+                        shutil.copy2(ruta_temporal, ruta_destino)
+                        
+                        print(f"  [OK] Organizado en {carpeta_destino.name}/")
+                        resumen_ftp["descargados"] += 1
+                        resumen_ftp["detalles"].append({
+                            "archivo": nombre_archivo,
+                            "fecha": fecha_interna,
+                            "carpeta_destino": str(carpeta_destino),
+                            "estado": "DESCARGADO"
+                        })
+                        
+                    except Exception as e_extract:
+                        print(f"  [ERROR] Error extrayendo fecha: {e_extract}")
+                        resumen_ftp["errores"] += 1
+                        resumen_ftp["detalles"].append({
+                            "archivo": nombre_archivo,
+                            "estado": "ERROR",
+                            "motivo": str(e_extract)
+                        })
+                    
+                finally:
+                    # Limpia archivo temporal
+                    try:
+                        if ruta_temporal.exists():
+                            ruta_temporal.unlink()
+                    except Exception:
+                        pass
+        
+        finally:
+            # Cierra conexión FTP
+            cerrar_ftp(ftp)
+            print("\n[OK] Conexión FTP cerrada")
+        
+        # Limpia carpeta temporal
+        try:
+            shutil.rmtree(carpeta_temporal)
+        except Exception:
+            pass
+        
+        print(f"\n[RESUMEN FTP] Descargados: {resumen_ftp['descargados']}, Errores: {resumen_ftp['errores']}")
+    
+    except Exception as e:
+        print(f"[ERROR] Error en descarga FTP: {e}")
+        resumen_ftp["errores"] += 1
+        resumen_ftp["detalles"].append({
+            "estado": "ERROR_GENERAL",
+            "motivo": str(e)
+        })
+    
+    return resumen_ftp
+
+
+def _extraer_fecha_nombre_archivo(nombre_archivo: str) -> str | None:
+    """
+    Extrae la fecha del nombre del archivo.
+    Formato esperado: CICSADM_YYYYMMDD.txt o CICSADM_YYYYMMDD_*.txt
+    Retorna la fecha en formato YYYY-MM-DD o None si no se encontró.
+    """
+    import re
+    
+    # Busca patrón YYYYMMDD en el nombre del archivo
+    match = re.search(r'_(\d{8})', nombre_archivo.upper())
+    if match:
+        fecha_str = match.group(1)
+        try:
+            # Valida que sea una fecha válida
+            año = int(fecha_str[0:4])
+            mes = int(fecha_str[4:6])
+            día = int(fecha_str[6:8])
+            
+            if 1 <= mes <= 12 and 1 <= día <= 31:
+                return f"{año:04d}-{mes:02d}-{día:02d}"
+        except (ValueError, IndexError):
+            pass
+    
+    return None
+
+
 def main():
+
     inicio = datetime.now()
     resumen = {
         "inicio": inicio.strftime("%Y-%m-%d %H:%M:%S"),
@@ -694,13 +858,22 @@ def main():
         "sin_validos": 0,
         "errores": 0,
         "detalle": [],
+        "ftp": {}
     }
+
+    # Asegura defaults de configuración (incluye analisis_completo y FTP).
+    asegurar_tabla_cics_configuracion()
+
+    # Descarga desde FTP si está habilitado
+    try:
+        resumen_ftp = descargar_y_preparar_desde_ftp()
+        resumen["ftp"] = resumen_ftp
+    except Exception as e:
+        print(f"[WARN] Error en descarga FTP: {e}")
+        resumen["ftp"] = {"descargados": 0, "errores": 1, "detalles": [{"error": str(e)}]}
 
     if not DIRECTORIO_REPORTES.exists():
         raise FileNotFoundError(f"No existe el directorio: {DIRECTORIO_REPORTES}")
-
-    # Asegura defaults de configuración (incluye analisis_completo).
-    asegurar_tabla_cics_configuracion()
 
     carpetas_fecha = obtener_carpetas_fecha_ordenadas(DIRECTORIO_REPORTES)
 
