@@ -168,31 +168,13 @@ def _enviar_notificacion_fin_proceso(resumen: dict) -> None:
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:760px;margin:0 auto;background:#FFFFFF;border:1px solid #DDE3EA;border-radius:8px;overflow:hidden;">
         <tr>
             <td style="background:#003A70;padding:28px;border-top:4px solid #F2B01E;">
-                <div style="font-size:34px;line-height:1;font-weight:700;color:#FFFFFF;">Portal C3</div>
-                <div style="margin-top:8px;font-size:13px;font-weight:600;letter-spacing:1px;color:#08C2E5;text-transform:uppercase;">Sistema de monitoreo</div>
+                <div style="font-size:34px;line-height:1;font-weight:700;color:#FFFFFF;">Control de Codigo</div>
+                <div style="margin-top:8px;font-size:13px;font-weight:600;letter-spacing:1px;color:#08C2E5;text-transform:uppercase;">Depuración CICS</div>
             </td>
         </tr>
         <tr>
             <td style="padding:24px 28px;">
-                <div style="display:inline-block;background:#F2B01E;color:#3F2A00;font-weight:700;font-size:12px;letter-spacing:0.8px;text-transform:uppercase;border-radius:14px;padding:6px 12px;">Alerta</div>
-
-                <div style="margin-top:14px;background:#FAF6EC;border-left:4px solid #F2B01E;border-radius:6px;padding:18px;">
-                    <div style="font-size:24px;line-height:1;color:#F2B01E;">&#9888;</div>
-                    <div style="margin-top:8px;font-size:34px;font-weight:700;line-height:1.05;color:#003A70;">Alerta de Ingesta DLUR</div>
-                    <div style="margin-top:12px;font-size:18px;line-height:1.45;color:#374151;">
-                        El servidor <strong>{html.escape(servidor_afectado)}</strong> concluyó la ejecución con estado <strong>{html.escape(estado_global.upper())}</strong>.
-                    </div>
-                </div>
-
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:20px;border-collapse:collapse;">
-                    <tr>
-                        <td style="padding:11px 0;border-bottom:1px solid #E5E7EB;color:#6B7280;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;">Servidor afectado</td>
-                        <td style="padding:11px 0;border-bottom:1px solid #E5E7EB;color:#003A70;font-weight:700;text-align:right;">{html.escape(servidor_afectado)}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding:11px 0;border-bottom:1px solid #E5E7EB;color:#6B7280;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;">Tiempo sin archivos</td>
-                        <td style="padding:11px 0;border-bottom:1px solid #E5E7EB;color:#003A70;font-weight:700;text-align:right;">{html.escape(tiempo_sin_archivos)}</td>
-                    </tr>
                     <tr>
                         <td style="padding:11px 0;border-bottom:1px solid #E5E7EB;color:#6B7280;text-transform:uppercase;font-size:12px;letter-spacing:0.5px;">Última recepción registrada</td>
                         <td style="padding:11px 0;border-bottom:1px solid #E5E7EB;color:#003A70;font-weight:700;text-align:right;">{html.escape(str(resumen.get('fin', '')))}<div style="font-size:11px;color:#6B7280;font-weight:500;">(hora de Guatemala)</div></td>
@@ -215,10 +197,6 @@ def _enviar_notificacion_fin_proceso(resumen: dict) -> None:
                     </tr>
                 </table>
 
-                <div style="margin-top:18px;font-size:15px;line-height:1.65;color:#6B7280;">
-                    Por favor, verificar el estado del z/Series y la conectividad a la carpeta compartida. Si el problema persiste, contactar al administrador.
-                </div>
-
                 <div style="margin-top:20px;font-size:12px;color:#6B7280;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Detalle por carpeta</div>
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:8px;border:1px solid #E5E7EB;border-radius:6px;border-collapse:collapse;font-size:13px;">
                     <tr style="background:#F9FAFB;">
@@ -238,7 +216,7 @@ def _enviar_notificacion_fin_proceso(resumen: dict) -> None:
         </tr>
         <tr>
             <td style="background:#F3F4F6;padding:18px 28px;text-align:center;font-size:12px;color:#6B7280;line-height:1.6;">
-                Mensaje automático generado por <strong style="color:#003A70;">Portal C3</strong> — no responder a este correo.<br />
+                Mensaje automático generado por <strong style="color:#003A70;">Control de Codigo</strong> — no responder a este correo.<br />
                 © Banco Industrial, S.A. — Todos los derechos reservados.
             </td>
         </tr>
