@@ -160,6 +160,13 @@ def obtener_fecha_encabezado(file_path: Path, fecha_esperada: str | None = None)
         re.compile(r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b"),
     ]
 
+    fecha_esperada_dt = None
+    if fecha_esperada:
+        try:
+            fecha_esperada_dt = datetime.strptime(fecha_esperada, "%Y-%m-%d").date()
+        except ValueError:
+            fecha_esperada_dt = None
+
     with file_path.open("r", encoding="utf-8", errors="ignore") as f:
         # Algunos reportes pueden incluir cabeceras extendidas; ampliar ventana de lectura.
         lineas_leidas = 0
@@ -215,6 +222,38 @@ def obtener_fecha_encabezado(file_path: Path, fecha_esperada: str | None = None)
                 raise ValueError(
                     f"La fecha '{fecha_txt}' del archivo {file_path.name} no coincide con formatos esperados."
                 )
+
+            if fecha_esperada_dt:
+                candidatos_mismo_mes = []
+                candidatos_mismo_ano = []
+                for fecha_str in fechas_parseadas:
+                    try:
+                        candidato = datetime.strptime(fecha_str, "%Y-%m-%d").date()
+                    except ValueError:
+                        continue
+
+                    if candidato.year == fecha_esperada_dt.year:
+                        candidatos_mismo_ano.append(fecha_str)
+                    if candidato.year == fecha_esperada_dt.year and candidato.month == fecha_esperada_dt.month:
+                        candidatos_mismo_mes.append(fecha_str)
+
+                if candidatos_mismo_mes:
+                    seleccion = candidatos_mismo_mes[0]
+                    if debug_header_date:
+                        print(
+                            f"[DEBUG_FECHA] {file_path.name} seleccionada por coincidencia de año/mes con carpeta: "
+                            f"{seleccion}"
+                        )
+                    return seleccion
+
+                if candidatos_mismo_ano:
+                    seleccion = candidatos_mismo_ano[0]
+                    if debug_header_date:
+                        print(
+                            f"[DEBUG_FECHA] {file_path.name} seleccionada por coincidencia de año con carpeta: "
+                            f"{seleccion}"
+                        )
+                    return seleccion
 
             if debug_header_date:
                 print(

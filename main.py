@@ -851,10 +851,11 @@ def descargar_y_preparar_desde_ftp() -> dict:
                     
                     # Extrae fecha interna del archivo
                     try:
-                        fecha_interna = obtener_fecha_encabezado(ruta_temporal)
+                        fecha_nombre = _extraer_fecha_nombre_archivo(nombre_archivo)
+                        fecha_interna = obtener_fecha_encabezado(ruta_temporal, fecha_esperada=fecha_nombre)
                         if fecha_interna is None:
                             # Si no encontró fecha interna, tenta parsear la del nombre
-                            fecha_interna = _extraer_fecha_nombre_archivo(nombre_archivo)
+                            fecha_interna = fecha_nombre
                         
                         if fecha_interna is None:
                             print(f"  [WARN] No se pudo extraer fecha del archivo {nombre_archivo}. Se omite.")
@@ -865,6 +866,12 @@ def descargar_y_preparar_desde_ftp() -> dict:
                                 "motivo": "No se encontró fecha interna ni en nombre"
                             })
                             continue
+
+                        if fecha_nombre and fecha_interna != fecha_nombre:
+                            print(
+                                f"  [WARN] Fecha interna {fecha_interna} no coincide con la fecha del nombre {fecha_nombre} "
+                                f"para {nombre_archivo}. Se prioriza la fecha interna detectada en encabezado."
+                            )
                         
                         # Crea carpeta de destino con la fecha correcta
                         carpeta_destino = DIRECTORIO_REPORTES / fecha_interna
